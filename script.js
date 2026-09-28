@@ -2661,6 +2661,14 @@ function setLobbyCam(on) {
   if (on) startLobbyCamera(); else stopLobbyCamera("Camera is off");
 }
 
+/* ---- meeting security (UI only: a prototype control, like the Schedule modal's own password switch - there is no join-time password check to wire it to) ---- */
+function genLobbyPassword() { return "Teloz@" + Math.floor(1000 + Math.random() * 9000); }
+function setLobbyPassword(on, value) {
+  $("#lobbyPasswordToggle").checked = on;
+  $("#lobbyPasswordHint").textContent = on ? "Participants will need a password to join" : "Protect your meeting with a password";
+  if (value) $("#lobbyPasswordInput").value = value;
+  bootstrap.Collapse.getOrCreateInstance($("#lobbyPasswordFields"), { toggle: false })[on ? "show" : "hide"]();
+}
 /* ---- background + enhancements ---- */
 // (background, switches and adjustments live in videoFx; fxSyncUi() paints them onto this popup)
 function setLobbyBackground(kind) { videoFx.set({ background: kind }); }
@@ -2693,7 +2701,7 @@ function initStartModal() {
     $("#startMeetingIdText").textContent = startModalDraft.meetingCode;
 
     const remembered = state.lobbyPrefs.remember;
-    const prefs = remembered ? state.lobbyPrefs : { mic: true, cam: true, noiseSuppression: true, touchUp: false, mirror: true, autoLight: true };
+    const prefs = remembered ? state.lobbyPrefs : { mic: true, cam: true, noiseSuppression: true, touchUp: false, mirror: true, autoLight: true, password: false, passwordValue: "" };
     $("#lobbyRememberSettings").checked = remembered;
     videoFx.reset(remembered); // the fine adjustments only come back when "Remember my settings" was ticked
     videoFx.set({ noiseSuppression: prefs.noiseSuppression, mirror: prefs.mirror, autoLighting: prefs.autoLight, background: "none",
@@ -2702,6 +2710,7 @@ function initStartModal() {
     resetMicTest();
     setLobbyMic(prefs.mic);
     setLobbyCam(prefs.cam);
+    setLobbyPassword(!!prefs.password, prefs.passwordValue || genLobbyPassword());
   });
 
   on($("#startMicBtn"), "click", () => setLobbyMic(!lobbyIsOn("#startMicBtn")));
@@ -2724,6 +2733,15 @@ function initStartModal() {
   on($("#lobbyCamSelect"), "change", () => { if ($("#lobbyCamSelect").dataset.real && lobbyIsOn("#startCamBtn")) startLobbyCamera(); });
   on($("#lobbyMicSelect"), "change", () => { resetMicTest(); if ($("#lobbyMicSelect").dataset.real && lobbyIsOn("#startMicBtn")) fxAudio.start(fxMicDeviceId("lobby")); }); // another microphone: not tested yet
   on($("#lobbyRememberSettings"), "change", (e) => { state.lobbyPrefs.remember = e.target.checked; saveState(); });
+
+  on($("#lobbyPasswordToggle"), "change", (e) => setLobbyPassword(e.target.checked));
+  on($("#lobbyPasswordVisBtn"), "click", () => {
+    const input = $("#lobbyPasswordInput"), show = input.type === "password";
+    input.type = show ? "text" : "password";
+    $("#lobbyPasswordVisBtn").innerHTML = `<i class="bi bi-eye${show ? "-slash" : ""}"></i>`;
+    $("#lobbyPasswordVisBtn").title = $("#lobbyPasswordVisBtn").ariaLabel = show ? "Hide password" : "Show password";
+  });
+  on($("#lobbyPasswordGenBtn"), "click", () => { $("#lobbyPasswordInput").value = genLobbyPassword(); });
 
   on($("#lobbyInvitePeopleBtn"), "click", () => openInviteModal(null));
   on($("#startCopyLinkBtn"), "click", () => {
@@ -2772,6 +2790,7 @@ function initStartModal() {
       Object.assign(state.lobbyPrefs, {
         remember: true, mic: cfg.mic, cam: cfg.cam,
         noiseSuppression: cfg.noise, touchUp: cfg.touchUp, mirror: cfg.mirror, autoLight: cfg.light,
+        password: $("#lobbyPasswordToggle").checked, passwordValue: $("#lobbyPasswordInput").value,
       });
       saveState();
     }
@@ -3389,7 +3408,80 @@ function liveReact(emoji) {
   setTimeout(() => el.remove(), 2300);
 }
 
-/* ---- recording ---- */
+/* ---- recording: a real capture via MediaRecorder, not just a timer ----
+   Video = the effects pipeline's own output (live.display, i.e. background/appearance effects already baked in), or the raw camera if no
+   pipeline is active. Audio = the cleaned-up microphone (fxAudio.output) while it's running, else the raw mic track. Both are live track
+   references (not clones), kept in sync while recording: muting/unmuting, turning the camera off/on, or toggling an effect swaps the track on
+   the SAME MediaStream object rather than restarting the recorder, since MediaRecorder keeps recording through a track being added/removed. */
+const liveRec = { recorder: null, chunks: [], stream: null, mimeType: "", unsubVideo: null, unsubAudio: null };
+const LIVE_REC_MIME_CANDIDATES = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+const liveRecVideoTrack = () => { const s = live.display || live.stream; return s ? s.getVideoTracks()[0] || null : null; };
+const liveRecAudioTrack = () => { const s = (fxAudio.state === "on" && fxAudio.output) || live.stream; return s ? s.getAudioTracks()[0] || null : null; };
+function liveRecSyncTrack(kind) {
+  if (!liveRec.stream) return;
+  const want = kind === "video" ? liveRecVideoTrack() : liveRecAudioTrack();
+  const existing = kind === "video" ? liveRec.stream.getVideoTracks()[0] : liveRec.stream.getAudioTracks()[0];
+  if (existing === want) return;
+  if (existing) liveRec.stream.removeTrack(existing);
+  if (want) liveRec.stream.addTrack(want);
+}
+function startLiveRecording() {
+  if (!window.MediaRecorder) { toast("Recording isn't supported in this browser.", "error"); return false; }
+  const vTrack = liveRecVideoTrack(), aTrack = liveRecAudioTrack();
+  if (!vTrack && !aTrack) { toast("Turn your camera or microphone on to record.", "error"); return false; }
+  liveRec.stream = new MediaStream();
+  if (vTrack) liveRec.stream.addTrack(vTrack);
+  if (aTrack) liveRec.stream.addTrack(aTrack);
+  liveRec.mimeType = LIVE_REC_MIME_CANDIDATES.find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || "";
+  liveRec.chunks = [];
+  try { liveRec.recorder = new MediaRecorder(liveRec.stream, liveRec.mimeType ? { mimeType: liveRec.mimeType } : undefined); }
+  catch (e) { toast("Recording couldn't start in this browser.", "error"); liveRec.stream = null; return false; }
+  liveRec.recorder.ondataavailable = (e) => { if (e.data && e.data.size) liveRec.chunks.push(e.data); };
+  liveRec.recorder.start(1000); // 1s timeslice: a crash mid-recording still leaves most of it in state.liveMeeting
+  liveRec.unsubVideo = videoFx.subscribe(() => liveRecSyncTrack("video"));
+  liveRec.unsubAudio = fxAudio.subscribe(() => liveRecSyncTrack("audio"));
+  return true;
+}
+function pauseLiveRecording(pause) {
+  const rec = liveRec.recorder;
+  if (!rec) return;
+  if (pause && rec.state === "recording") rec.pause();
+  else if (!pause && rec.state === "paused") rec.resume();
+}
+function stopLiveRecording() { // -> Promise<Blob|null>
+  return new Promise((resolve) => {
+    if (liveRec.unsubVideo) { liveRec.unsubVideo(); liveRec.unsubVideo = null; }
+    if (liveRec.unsubAudio) { liveRec.unsubAudio(); liveRec.unsubAudio = null; }
+    const rec = liveRec.recorder;
+    if (!rec || rec.state === "inactive") { liveRec.recorder = null; liveRec.stream = null; resolve(null); return; }
+    rec.onstop = () => {
+      const blob = liveRec.chunks.length ? new Blob(liveRec.chunks, { type: liveRec.mimeType || "video/webm" }) : null;
+      liveRec.chunks = []; liveRec.recorder = null; liveRec.stream = null;
+      resolve(blob);
+    };
+    rec.stop();
+  });
+}
+const LIVE_RECORDING_BLOBS = new Map(); // recording.id -> object URL, kept only in memory (never in state/localStorage, same as the camera/mic stream itself)
+function saveLiveRecording(blob) {
+  const meeting = state.liveMeeting;
+  const rec = {
+    id: uid("rec"), meetingId: meeting ? meeting.id : "", name: (meeting && meeting.title) || "Meeting recording",
+    sizeMB: Math.round((blob.size / (1024 * 1024)) * 10) / 10, recordedOn: TODAY_ISO, ownerId: ME.id,
+    members: meeting ? meeting.participants.length + 1 : 1, sharedWith: meeting ? meeting.participants.slice() : [],
+    team: (meeting && meeting.team) || ME.teamId || "", locationId: (meeting && meeting.locationId) || ME.locationId || "mumbai",
+    transcriptAvailable: false, isDemo: false, isLive: true, // isLive: a real capture from this session, not sample data
+  };
+  LIVE_RECORDING_BLOBS.set(rec.id, URL.createObjectURL(blob));
+  state.recordings.unshift(rec);
+  saveState();
+  renderRecordings();
+}
+async function stopLiveRecordingIfActive() { // used when leaving/ending a meeting: save whatever was captured instead of discarding it
+  if (live.recState === "idle") return;
+  const blob = await stopLiveRecording();
+  if (blob && blob.size) saveLiveRecording(blob);
+}
 function setRecState(next) {
   live.recState = next;
   const active = next !== "idle";
@@ -3423,9 +3515,23 @@ function setRecState(next) {
 }
 function runRecAction(action) {
   if (!authorize("record.control", state.liveMeeting)) return;
-  if (action === "start") { live.recSecs = 0; $("#liveRecTimer").textContent = "00:00"; setRecState("recording"); if (state.liveMeeting) state.liveMeeting.hasRecording = true; toast("Recording started."); }
-  else if (action === "pause") { const paused = live.recState === "recording"; setRecState(paused ? "paused" : "recording"); toast(paused ? "Recording paused." : "Recording resumed."); }
-  else if (action === "stop") liveConfirm({ title: "Stop recording?", text: "The recording will be saved to this meeting.", ok: "Stop Recording", danger: true, onOk: () => { setRecState("idle"); toast("Recording saved."); } });
+  if (action === "start") {
+    if (!startLiveRecording()) return;
+    live.recSecs = 0; $("#liveRecTimer").textContent = "00:00"; setRecState("recording");
+    toast("Recording started.");
+  } else if (action === "pause") {
+    const pausing = live.recState === "recording";
+    pauseLiveRecording(pausing);
+    setRecState(pausing ? "paused" : "recording");
+    toast(pausing ? "Recording paused." : "Recording resumed.");
+  } else if (action === "stop") {
+    liveConfirm({ title: "Stop recording?", text: "The recording will be saved to this meeting.", ok: "Stop Recording", danger: true, onOk: async () => {
+      setRecState("idle");
+      const blob = await stopLiveRecording();
+      if (blob && blob.size) { saveLiveRecording(blob); toast("Recording saved."); }
+      else toast("Recording stopped - nothing was captured.", "error");
+    } });
+  }
 }
 
 /* ---- captions + transcription ----
@@ -4695,15 +4801,19 @@ function liveParticipantsHtml(filter) {
   const rows = livePeople().filter((u) => !q || u.name.toLowerCase().includes(q));
   if (!rows.length) return '<p class="live-empty">No participants match your search.</p>';
   return rows.map((u) => {
-    const st = livePeerState(u);
+    const st = livePeerState(u), isMe = u.id === ME.id;
+    // clicking your own icon mirrors the toolbar mic/cam buttons exactly (no permission needed); clicking someone else's mutes/stops them directly if you
+    // may moderate them, or - if they're already off - "asks" them (simulated reply after 1.5s), same as the ⋮ menu's equivalent items ever did.
+    const micTip = st.muted ? (isMe ? "Unmute microphone" : "Ask to unmute") : "Mute microphone";
+    const camTip = st.camOff ? (isMe ? "Turn on camera" : "Ask to start video") : "Turn off camera";
     return `<div class="live-person" style="--hue:${liveHue(u.id)}">
       <span class="live-msg-avatar">${u.initials}</span>
-      <span class="flex-grow-1 live-min-0"><span class="d-block text-truncate">${escapeHtml(u.name)}${u.id === ME.id ? " (You)" : ""}${u.demo ? ' <span class="live-ai-demo">DEMO</span>' : ""}</span>
+      <span class="flex-grow-1 live-min-0"><span class="d-block text-truncate">${escapeHtml(u.name)}${isMe ? " (You)" : ""}${u.demo ? ' <span class="live-ai-demo">DEMO</span>' : ""}</span>
         ${u.id === live.hostId ? '<span class="badge bg-primary-subtle text-primary-emphasis">Host</span>' : ""}</span>
       <span class="live-person-state">
         ${st.hand ? '<i class="bi bi-hand-index-thumb-fill live-hand-flag" title="Hand raised"></i>' : ""}
-        <i class="bi ${st.muted ? "bi-mic-mute-fill" : "bi-mic-fill"}" title="${st.muted ? "Muted" : "Mic on"}"></i>
-        <i class="bi ${st.camOff ? "bi-camera-video-off-fill" : "bi-camera-video-fill"}" title="${st.camOff ? "Camera off" : "Camera on"}"></i>
+        <button type="button" class="live-icon-btn live-toggle-btn" data-live-action="${st.muted ? "ask-unmute" : "mute"}" data-user="${u.id}" title="${micTip}" aria-label="${escapeHtml(u.name)}: ${micTip}"><i class="bi ${st.muted ? "bi-mic-mute-fill" : "bi-mic-fill"}"></i></button>
+        <button type="button" class="live-icon-btn live-toggle-btn" data-live-action="${st.camOff ? "ask-video" : "stop-video"}" data-user="${u.id}" title="${camTip}" aria-label="${escapeHtml(u.name)}: ${camTip}"><i class="bi ${st.camOff ? "bi-camera-video-off-fill" : "bi-camera-video-fill"}"></i></button>
         <span class="position-relative"><button class="live-icon-btn" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" aria-label="Actions for ${escapeHtml(u.name)}"><i class="bi bi-three-dots-vertical"></i></button>
           <ul class="dropdown-menu dropdown-menu-end">${liveMenuItems(u)}</ul></span>
       </span></div>`;
@@ -4793,11 +4903,14 @@ const LIVE_ACTION_PERM = {
   answer: "meeting.moderate", "answer-save": "meeting.moderate", whiteboard: "whiteboard", effects: "effects", "hide-tile": "tile.hide", "show-tile": "tile.hide", hand: "hand",
   "meeting-settings": "room.settings", "participants-manage": "room.participantManagement",
 };
+const LIVE_SELF_TOGGLE = ["mute", "ask-unmute", "stop-video", "ask-video"]; // your own mic/camera: always allowed, no participants.* permission needed (same as the toolbar buttons)
 function runLiveAction(action, btn) {
   const meeting = state.liveMeeting;
   const uid = btn && btn.getAttribute("data-user");
   const peer = uid && userById(uid);
-  const perm = action === "lower-hand" && uid !== ME.id ? "participants.manage" : LIVE_ACTION_PERM[action]; // lowering someone else's hand is moderation
+  const perm = uid === ME.id && LIVE_SELF_TOGGLE.includes(action) ? null // toggling your own row's mic/camera icon
+    : action === "lower-hand" && uid !== ME.id ? "participants.manage" // lowering someone else's hand is moderation
+    : LIVE_ACTION_PERM[action];
   if (perm && !authorize(perm, meeting)) return;
   const hideMore = () => { if (live.panel === "more") closeLivePanel(); };
   const patchPeer = (patch, msg) => { Object.assign(live.peers[uid], patch); if (msg) toast(msg); refreshLiveTiles(); if (live.panel === "participants") renderLivePanel(); };
@@ -4825,11 +4938,11 @@ function runLiveAction(action, btn) {
     case "show-tile": live.hideSelf = false; syncHideTileUI(); renderLiveStage(); break;
     case "pin": pinLiveUser(uid || liveMainId()); break;
     case "unpin": live.pinnedId = null; renderLiveStage(); break;
-    case "mute": patchPeer({ muted: true }, `Muted ${peer.name}.`); break;
-    case "stop-video": patchPeer({ camOff: true }, `Stopped ${peer.name}'s video.`); break;
+    case "mute": if (uid === ME.id) { $("#liveMicBtn").click(); break; } patchPeer({ muted: true }, `Muted ${peer.name}.`); break;
+    case "stop-video": if (uid === ME.id) { $("#liveCamBtn").click(); break; } patchPeer({ camOff: true }, `Stopped ${peer.name}'s video.`); break;
     case "lower-hand": if (uid === ME.id) setLiveHand(false); else { setPeerHand(uid, false); toast(`Lowered ${peer.name}'s hand.`, "success", "hand"); } break;
-    case "ask-unmute": toast(`Asked ${peer.name} to unmute.`); setTimeout(() => { if (live.peers[uid]) patchPeer({ muted: false }, `${peer.name} unmuted.`); }, 1500); break;
-    case "ask-video": toast(`Asked ${peer.name} to start their video.`); setTimeout(() => { if (live.peers[uid]) patchPeer({ camOff: false }, `${peer.name} started their video.`); }, 1500); break;
+    case "ask-unmute": if (uid === ME.id) { $("#liveMicBtn").click(); break; } toast(`Asked ${peer.name} to unmute.`); setTimeout(() => { if (live.peers[uid]) patchPeer({ muted: false }, `${peer.name} unmuted.`); }, 1500); break;
+    case "ask-video": if (uid === ME.id) { $("#liveCamBtn").click(); break; } toast(`Asked ${peer.name} to start their video.`); setTimeout(() => { if (live.peers[uid]) patchPeer({ camOff: false }, `${peer.name} started their video.`); }, 1500); break;
     case "message": live.chatTo = uid; openLivePanel("chat"); setTimeout(() => $("#liveChatInput").focus(), 260); break;
     case "view-details": showParticipantDetails(peer); break;
     case "meeting-settings": hideMore(); if (meeting) openDetailsDrawer(meeting, "settings"); break;
@@ -5108,9 +5221,10 @@ function openEndDialog() {
   openModal("endMeetingConfirmOverlay");
 }
 // Leave: you go, the meeting carries on for everyone else and stays under Ongoing Meetings
-function leaveLiveMeeting() {
+async function leaveLiveMeeting() {
   const meeting = state.liveMeeting;
   if (!authorize("meeting.leave", meeting)) return;
+  await stopLiveRecordingIfActive(); // save whatever was captured rather than throwing it away
   closeModal("endMeetingConfirmOverlay");
   closeModal("liveModalOverlay");
   resetLiveRoom();
@@ -5123,9 +5237,10 @@ function leaveLiveMeeting() {
   renderAllViews();
   toast("You left the meeting.");
 }
-function endLiveMeeting() {
+async function endLiveMeeting() {
   const meeting = state.liveMeeting;
   if (!authorize("meeting.end", meeting)) { closeModal("endMeetingConfirmOverlay"); return; }
+  await stopLiveRecordingIfActive(); // save whatever was captured rather than throwing it away
   closeModal("endMeetingConfirmOverlay");
   closeModal("liveModalOverlay");
   resetLiveRoom();
@@ -5138,7 +5253,7 @@ function endLiveMeeting() {
   if (found) removeMeetingFrom(found.listKey, meeting.id);
   meeting.status = "Ended";
   meeting.chatCount = meeting.chatCount || Math.floor(Math.random() * 10) + 2;
-  meeting.hasRecording = true;
+  meeting.hasRecording = meeting.hasRecording || state.recordings.some((r) => r.meetingId === meeting.id); // real now: only true if something was actually recorded
   state.meetings.past.unshift(meeting);
   state.liveMeeting = null;
   saveState();
@@ -5449,11 +5564,16 @@ function initRecordingsInteractions() {
         <div><strong>${escapeHtml(rec.name)}</strong></div>
         <div>${rec.sizeMB.toFixed(1)} MB • Recorded ${formatFullDate(rec.recordedOn)}</div>
         <div>Owner: ${owner ? owner.name : "—"} • ${rec.members} members</div>`;
+      const player = $("#recordingPlayerBox"), url = LIVE_RECORDING_BLOBS.get(rec.id);
+      player.classList.toggle("has-video", !!url);
+      player.innerHTML = url
+        ? `<video src="${url}" controls autoplay></video>`
+        : `<svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg><span>Recording preview unavailable in prototype</span>`;
       openModal("recordingPreviewOverlay");
     } else if (action === "transcript") {
       openTranscript(rec);
     } else if (action === "download") {
-      toast(`Downloading "${rec.name}"...`);
+      downloadRecording(rec);
     } else if (action === "share") {
       toast("Recording shared.");
     } else if (action === "delete") {
@@ -5464,6 +5584,8 @@ function initRecordingsInteractions() {
   on($("#confirmDeleteRecordingBtn"), "click", () => {
     if (deleteRecordingContext) {
       if (!authorize("recording.delete", deleteRecordingContext)) { closeModal("deleteRecordingConfirmOverlay"); return; }
+      const url = LIVE_RECORDING_BLOBS.get(deleteRecordingContext.id);
+      if (url) { URL.revokeObjectURL(url); LIVE_RECORDING_BLOBS.delete(deleteRecordingContext.id); }
       state.recordings = state.recordings.filter((r) => r.id !== deleteRecordingContext.id);
       saveState();
       renderRecordings();
@@ -5471,7 +5593,16 @@ function initRecordingsInteractions() {
     }
     closeModal("deleteRecordingConfirmOverlay");
   });
-  on($("#recordingDownloadBtn"), "click", () => { if (recordingPreviewContext && authorize("recording.download", recordingPreviewContext)) toast("Downloading recording..."); });
+  on($("#recordingDownloadBtn"), "click", () => { if (recordingPreviewContext && authorize("recording.download", recordingPreviewContext)) downloadRecording(recordingPreviewContext); });
+}
+// a real capture downloads for real; a demo/sample recording (no actual file behind it) still just says so
+function downloadRecording(rec) {
+  const url = LIVE_RECORDING_BLOBS.get(rec.id);
+  if (!url) { toast(`Downloading "${rec.name}"...`); return; }
+  const a = document.createElement("a");
+  a.href = url; a.download = `${rec.name.replace(/[^\w -]+/g, "").trim() || "recording"}.webm`;
+  document.body.appendChild(a); a.click(); a.remove();
+  toast(`Downloading "${rec.name}"...`);
 }
 
 /* ============================================================

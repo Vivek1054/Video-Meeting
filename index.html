@@ -851,6 +851,35 @@
             </div>
           </div>
 
+          <div class="card rounded-4 shadow-sm mb-2" id="lobbySecurityCard">
+            <div class="card-body px-3 py-2">
+              <h4 class="d-flex align-items-center gap-2 fs-6 fw-semibold mb-0">
+                <span class="lobby-section-icon"><i class="bi bi-lock-fill"></i></span>
+                Meeting Security
+              </h4>
+              <div class="d-flex align-items-start justify-content-between gap-2 mt-2">
+                <div class="flex-grow-1">
+                  <label class="fw-semibold small d-block" for="lobbyPasswordToggle">Require meeting password</label>
+                  <span class="small text-body-secondary" id="lobbyPasswordHint">Protect your meeting with a password</span>
+                </div>
+                <div class="form-check form-switch mb-0 flex-shrink-0"><input class="form-check-input" type="checkbox" role="switch" id="lobbyPasswordToggle" /></div>
+              </div>
+              <div class="collapse" id="lobbyPasswordFields">
+                <label class="form-label small fw-semibold mb-1 mt-2" for="lobbyPasswordInput">Meeting Password</label>
+                <div class="d-flex align-items-center gap-2">
+                  <div class="lobby-password-field flex-grow-1">
+                    <input type="password" class="form-control form-control-sm" id="lobbyPasswordInput" value="Teloz@2026" autocomplete="off" aria-label="Meeting password" />
+                    <button class="lobby-password-eye" type="button" id="lobbyPasswordVisBtn" aria-label="Show password" title="Show password"><i class="bi bi-eye"></i></button>
+                  </div>
+                  <button class="btn btn-outline btn-sm text-nowrap" type="button" id="lobbyPasswordGenBtn" title="Generate a new password"><i class="bi bi-arrow-repeat me-1"></i>Generate</button>
+                </div>
+                <p class="small text-body-secondary d-flex align-items-start gap-2 mt-2 mb-0">
+                  <i class="bi bi-info-circle mt-1"></i><span>Participants will need this password to join the meeting.</span>
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div class="card rounded-4 shadow-sm flex-lg-grow-1">
             <div class="card-body px-3 py-2 d-flex flex-column justify-content-between">
               <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
@@ -1728,7 +1757,7 @@
       <button class="modal-close" data-close-modal="recordingPreviewOverlay" type="button" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body">
-      <div class="recording-player">
+      <div class="recording-player" id="recordingPlayerBox">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>
         <span>Recording preview unavailable in prototype</span>
       </div>

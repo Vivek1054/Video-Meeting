@@ -708,14 +708,18 @@ html.meeting-tab .app { visibility: hidden; }
 [data-theme="dark"] .lobby-modal .form-select { background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23b0b9c9' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e"); }
 .lobby-modal .form-check-input:not(:checked) { border-color: var(--border-strong); }
 [data-theme="dark"] .lobby-modal .form-switch .form-check-input:not(:checked) { --bs-form-switch-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%2374809a'/%3e%3c/svg%3e"); }
-.lobby-body { flex: 1; min-height: 0; }
 /* Two-column layout: the popup gets a definite height (never taller than the window), header + footer keep their size and the preview
-   takes whatever room is left, so header, preview, background, both cards and the footer are always on screen at once. */
+   takes whatever room is left, so header, preview, background, both cards and the footer are always on screen at once. .lobby-body itself
+   must NOT scroll (it inherits .modal-body's overflow-y:auto otherwise, which drags the video preview along with the settings column) -
+   only .lobby-side scrolls internally; every flex link in the chain needs min-height:0 or a taller child silently forces the row taller. */
+.lobby-body { flex: 1; min-height: 0; overflow: hidden; }
+.lobby-body .row { flex: 1; min-height: 0; }
+.lobby-body .row > [class*="col-"] { min-height: 0; }
 @media (min-width: 992px) { .lobby-modal { height: min(100%, 40rem); } }
 .lobby-stage-wrap { position: relative; flex: 1 1 auto; min-height: 10rem; aspect-ratio: 16 / 9; }
 .lobby-header-icon { width: 2.375rem; height: 2.375rem; border-radius: 0.625rem; background: var(--blue-600); color: #fff; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .lobby-name-input { width: 10.625rem; }
-.lobby-side { background: var(--bg-surface-alt); }
+.lobby-side { background: var(--bg-surface-alt); overflow-y: auto; overflow-x: hidden; }
 .lobby-min-0 { min-width: 0; }
 .lobby-brand-col { flex: 1 1 0; min-width: 15rem; }
 .lobby-id-badge { background: var(--bg-surface-alt); color: var(--text-primary); border: 0.0625rem solid var(--border-color); }
@@ -727,6 +731,17 @@ html.meeting-tab .app { visibility: hidden; }
 .status-dot-sm { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--text-tertiary); display: inline-block; flex-shrink: 0; }
 .status-dot-sm.good { background: var(--green-500); box-shadow: 0 0 0 0.1875rem rgba(34, 197, 94, .2); }
 .lobby-start-btn { min-width: 11.25rem; justify-content: center; gap: 0.5rem; }
+/* Meeting Security's password field: the show/hide toggle sits inside the input itself (its right edge), the standard pattern for a password
+   field, instead of as a separate button beside it. */
+.lobby-password-field { position: relative; }
+.lobby-password-field .form-control { padding-right: 2.25rem; letter-spacing: 0.03em; }
+.lobby-password-field .form-control:focus { letter-spacing: normal; } /* easier to read/edit while actively typing; the masked dots don't need the extra spacing */
+.lobby-password-eye {
+  position: absolute; top: 50%; right: 0.25rem; transform: translateY(-50%); width: 1.625rem; height: 1.625rem;
+  display: flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-tertiary);
+  transition: background .15s ease, color .15s ease;
+}
+.lobby-password-eye:hover { background: var(--bg-hover); color: var(--text-secondary); }
 
 /* preview stage: webcam <video>, avatar fallback, simulated background layer */
 .lobby-stage { position: absolute; inset: 0; overflow: hidden; background: linear-gradient(160deg, #1a2133, #10141f); }
@@ -941,7 +956,11 @@ html.meeting-tab .app { visibility: hidden; }
 .live-strip .live-tile-caption { display: none; }
 .live-nav { width: 2.125rem; height: 2.125rem; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 50%; background: var(--live-surface-2); border: 0.0625rem solid var(--live-border); transition: background .15s ease; }
 .live-nav:hover { background: var(--live-hover); }
-.live-captions { position: absolute; left: 50%; bottom: 3.75rem; transform: translateX(-50%); z-index: 3; max-width: min(42.5rem, 80%); padding: .5rem .9rem; border-radius: 0.625rem; background: rgba(0, 0, 0, .74); font-size: .95rem; line-height: 1.4; text-align: center; overflow: hidden; max-height: calc(4.2em + 1rem); pointer-events: none; }
+/* The caption pill is deliberately NOT themed - like any real captioning UI it overlays arbitrary video, so it stays dark-on-video in both Light and
+   Dark room modes. It must set its OWN text colour rather than inherit .live-room's (color: var(--live-text)): that token flips to a near-black in
+   Light mode for the room's light surfaces, which is illegible against this permanently-dark pill. */
+.live-captions { position: absolute; left: 50%; bottom: 3.75rem; transform: translateX(-50%); z-index: 3; max-width: min(42.5rem, 80%); padding: .5rem .9rem; border-radius: 0.625rem; background: rgba(0, 0, 0, .74); color: #f4f6fb; font-size: .95rem; line-height: 1.4; text-align: center; overflow: hidden; max-height: calc(4.2em + 1rem); pointer-events: none; }
+.live-captions .live-cap-demo { border-color: rgba(251, 191, 36, .5); background: rgba(251, 191, 36, .16); color: #fbbf24; } /* same reason: keep the bright, dark-surface amber even in Light mode, not the darker one meant for light surfaces */
 
 /* control bar */
 .live-toolbar { flex-shrink: 0; background: var(--live-bar); border-top: 0.0625rem solid var(--live-border); }
@@ -1001,6 +1020,12 @@ html.meeting-tab .app { visibility: hidden; }
 .live-person-state { display: flex; align-items: center; gap: .6rem; color: var(--live-muted); }
 .live-person-state .bi-mic-mute-fill { color: var(--live-red-2); }
 .live-person-state .bi-mic-fill { color: var(--live-mic); }
+.live-person-state .bi-camera-video-fill { color: var(--live-acc); } /* camera-off keeps the row's default muted grey; only "on" gets the accent, same rule as the mic */
+/* the per-participant mic/camera toggle buttons: same .live-icon-btn (size, hover background, 150ms transition) as the ⋮ button beside them, plus a
+   slight icon scale on hover so the click target reads as interactive without moving the row */
+.live-person .live-toggle-btn { width: 1.875rem; height: 1.875rem; display: inline-flex; align-items: center; justify-content: center; }
+.live-person .live-toggle-btn i { transition: transform .15s ease; }
+.live-person .live-toggle-btn:hover i { transform: scale(1.1); }
 .live-empty { color: var(--live-muted); font-size: .85rem; text-align: center; padding: 2rem 0; }
 
 @media (min-width: 768px) {
@@ -1150,6 +1175,8 @@ html.meeting-tab .app { visibility: hidden; }
 .avatar-stack .mini-avatar { width: 1.375rem; height: 1.375rem; border-radius: 50%; background: var(--blue-100); color: var(--blue-700); font-size: 0.5625rem; font-weight: 700; display: flex; align-items: center; justify-content: center; border: 0.125rem solid var(--bg-surface); margin-left: -0.375rem; }
 .avatar-stack .mini-avatar:first-child { margin-left: 0; }
 .recording-player { background: #111827; border-radius: var(--radius-md); color: #9ca3af; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.625rem; padding: 3rem 1.25rem; margin-bottom: 1rem; }
+.recording-player.has-video { padding: 0; } /* a real recording: the <video> fills the box edge-to-edge instead of the centered placeholder icon/text */
+.recording-player video { width: 100%; max-height: 24rem; border-radius: var(--radius-md); display: block; }
 .recording-meta { display: flex; flex-direction: column; gap: 0.375rem; font-size: 0.8125rem; color: var(--text-secondary); }
 .recording-meta strong { color: var(--text-primary); }
 
