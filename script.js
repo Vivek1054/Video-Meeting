@@ -235,9 +235,13 @@ let state = {
   meetings: { upcoming: [], ongoing: [], invited: [], past: [] },
   recordings: [],
   demoData: true, // the sample organisation (Admin, Location Admin, 2 managers, 4 agents + their meetings) is on by default; the switch and "Clear demo data" turn it off
-  filters: { status: "all", host: "all", date: "all", type: "all" },
+  filters: { location: "all", manager: "all", agent: "all" }, // Upcoming's hierarchical Location -> Manager -> Agent filter (applied; the popover holds the draft until Apply)
   sort: "soonest",
   search: "",
+  ongoingFilters: { location: "all", manager: "all", agent: "all" }, // Ongoing has its own independent search/filter/sort/view, same shape as Upcoming's
+  ongoingSort: "time-asc",
+  ongoingSearch: "",
+  ongoingListView: "list", // list | compact
   recFilters: { owner: "all", size: "all" },
   recSort: "newest",
   recSearch: "",
@@ -535,9 +539,10 @@ function setCurrentUser(id) {
   ME = user;
   try { sessionStorage.setItem(USER_KEY, user.id); localStorage.setItem(USER_KEY, user.id); } catch (e) { /* storage blocked */ }
   if (changed) { // nothing typed / chosen as the previous user carries over
-    state.search = ""; state.filters = { status: "all", host: "all", date: "all", type: "all" }; state.recFilters = { owner: "all", size: "all" }; state.recSearch = "";
-    $("#meetingSearchInput").value = ""; $("#recordingSearchInput").value = "";
-    ["#filterStatus", "#filterHost", "#filterDate", "#filterType", "#recFilterOwner", "#recFilterSize"].forEach((sel) => { const el = $(sel); if (el) el.value = "all"; });
+    state.search = ""; state.filters = hierarchyDefaults(); state.recFilters = { owner: "all", size: "all" }; state.recSearch = "";
+    state.ongoingSearch = ""; state.ongoingFilters = hierarchyDefaults();
+    $("#meetingSearchInput").value = ""; $("#recordingSearchInput").value = ""; $("#ongoingSearchInput").value = ""; $("#ongoingSearchClear").classList.add("d-none");
+    ["#recFilterOwner", "#recFilterSize"].forEach((sel) => { const el = $(sel); if (el) el.value = "all"; });
     closeContextMenu();
     resetScheduleForm(); // the schedule form holds nothing the previous user chose
     if (!$("#commandPaletteOverlay").hidden) closeModal("commandPaletteOverlay");
@@ -970,7 +975,10 @@ function meetingCardHTML(m, listKey) {
   } else if (listKey === "ongoing") {
     actionsHTML = `
       <button class="btn btn-primary btn-sm" data-action="join" data-id="${m.id}" data-list="${listKey}">Join</button>
-      <button class="btn btn-outline btn-sm" data-action="view" data-id="${m.id}" data-list="${listKey}">View</button>`;
+      <button class="btn btn-outline btn-sm" data-action="view" data-id="${m.id}" data-list="${listKey}">View</button>
+      <button class="icon-menu-btn" data-action="menu" data-id="${m.id}" data-list="${listKey}" aria-label="More options">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+      </button>`;
   } else if (listKey === "invited") {
     actionsHTML = `
       <button class="btn btn-primary btn-sm" data-action="join" data-id="${m.id}" data-list="${listKey}">Join</button>
@@ -987,15 +995,19 @@ function meetingCardHTML(m, listKey) {
   }
 
   const subRowExtra = listKey === "past" ? `<span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>${m.chatCount || 0} chat messages</span>` : "";
+  const isOngoing = listKey === "ongoing";
+  // Ongoing gets its own live elapsed readout (ticked in place every second, see tickOngoingTimers) and the same avatar row the calendar cards use
+  const elapsedBadge = isOngoing ? `<span class="live-elapsed-badge" data-live-elapsed="${m.id}" title="Time elapsed">00:00:00</span>` : "";
 
   return `
-  <div class="meeting-card" data-card-id="${m.id}" data-card-list="${listKey}">
+  <div class="meeting-card${isOngoing ? " meeting-card-live" : ""}" data-card-id="${m.id}" data-card-list="${listKey}">
     <div class="date-badge"><span class="month">${badge.month}</span><span class="day">${badge.day}</span></div>
     <div class="meeting-main">
       <div class="meeting-title-row">
         <h4>${escapeHtml(m.title)}</h4>
         <span class="status-chip ${statusClass(cardStatus)}">${liveDot}${cardStatus}</span>
         ${recurringChip}
+        ${elapsedBadge}
       </div>
       <div class="meeting-meta-row">
         <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>${formatTimeRange(m)}</span>
@@ -1006,6 +1018,7 @@ function meetingCardHTML(m, listKey) {
         <span>${memberGuestLine(m)}</span>
         <span>${m.meetingType}</span>
         ${subRowExtra}
+        ${isOngoing ? cardAvatarsHTML(m) : ""}
       </div>
     </div>
     <div class="meeting-actions">${actionsHTML}</div>
@@ -1046,6 +1059,26 @@ function calendarCardHTML(m) {
   </div>`;
 }
 
+// Ongoing's Compact View: small grid tiles, same visual language as Calendar View's cards, with the live elapsed readout and Join/View actions
+function ongoingCompactCardHTML(m) {
+  return `
+  <div class="cal-card meeting-card-live" data-cal-status="Live" data-card-id="${m.id}" data-card-list="ongoing">
+    <div class="cal-card-top">
+      <span class="status-chip ${statusClass(m.status)}"><span class="live-dot-sm"></span>${m.status}</span>
+      <span class="live-elapsed-badge" data-live-elapsed="${m.id}" title="Time elapsed">00:00:00</span>
+      <button class="icon-menu-btn" data-action="menu" data-id="${m.id}" data-list="ongoing" aria-label="More options">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+      </button>
+    </div>
+    <h4 class="cal-card-title">${escapeHtml(m.title)}</h4>
+    <p class="cal-card-desc">${formatTimeRange(m)} • Host: ${escapeHtml((userById(m.hostId) || {}).name || "—")}</p>
+    ${cardAvatarsHTML(m)}
+    <div class="cal-card-actions">
+      <button class="btn btn-primary btn-sm" data-action="join" data-id="${m.id}" data-list="ongoing">Join</button>
+      <button class="btn btn-outline btn-sm" data-action="view" data-id="${m.id}" data-list="ongoing">View</button>
+    </div>
+  </div>`;
+}
 // Calendar View's compact row presentation (the List half of the selected date's own Card/List switch) — same delegation as the card, just a
 // horizontal row instead of a tile; "View Details" lives in the ⋮ menu here to keep the row narrow, exactly as the compact mock calls for.
 function calendarRowHTML(m) {
@@ -1081,25 +1114,90 @@ function renderListInto(container, meetings, listKey, emptyTitle, emptyDesc) {
 }
 
 /* ---- filtering/sorting for upcoming ---- */
+/* ---- hierarchical Location -> Manager -> Agent filter, shared by Upcoming and Ongoing (each keeps its own applied state + draft popover) ---- */
+const filtersFor = (listKey) => (listKey === "ongoing" ? state.ongoingFilters : state.filters);
+function hierarchyDefaults() { // the baseline "nothing selected" state - for a scoped role that already means "my own location/team", never truly everyone
+  if (ME.role === "location_admin") return { location: ME.locationId, manager: "all", agent: "all" };
+  if (ME.role === "manager") return { location: ME.locationId, manager: ME.id, agent: "all" };
+  return { location: "all", manager: "all", agent: "all" };
+}
+const hierarchyLocationOptions = () => (ME.role === "admin" ? Object.values(LOCATIONS) : [LOCATIONS[ME.locationId]].filter(Boolean));
+const hierarchyManagerOptions = (locationId) => visibleUsers().filter((u) => u.role === "manager" && (locationId === "all" || u.locationId === locationId));
+const hierarchyAgentOptions = (locationId, managerId) => visibleUsers().filter((u) => u.role === "agent" && (locationId === "all" || u.locationId === locationId) && (managerId === "all" || u.managerId === managerId));
+// a meeting "belongs to" a manager if it's theirs to run (their team, or they host it) / an agent if it's assigned to or attended by them
+function applyHierarchyFilter(list, listKey) {
+  const f = filtersFor(listKey);
+  if (f.location !== "all") list = list.filter((m) => m.locationId === f.location);
+  if (f.manager !== "all") { const teamIds = managedTeamIds(userById(f.manager) || {}); list = list.filter((m) => m.hostId === f.manager || teamIds.includes(m.team)); }
+  if (f.agent !== "all") list = list.filter((m) => m.hostId === f.agent || (m.assignedTo || []).includes(f.agent) || (m.participants || []).includes(f.agent));
+  return list;
+}
+const FILTER_UI = {
+  upcoming: { btn: "filterBtn", label: "filterBtnLabel", pop: "filterPopover", loc: "filterLocation", locGroup: "filterLocationGroup", mgr: "filterManager", agt: "filterAgent", apply: "filterApply", clear: "filterReset", chips: "filterChips", render: () => renderUpcoming() },
+  ongoing: { btn: "filterBtnOngoing", label: "filterBtnLabelOngoing", pop: "filterPopoverOngoing", loc: "filterLocationOngoing", locGroup: "filterLocationGroupOngoing", mgr: "filterManagerOngoing", agt: "filterAgentOngoing", apply: "filterApplyOngoing", clear: "filterResetOngoing", chips: "filterChipsOngoing", render: () => renderOngoing() },
+};
+function populateFilterSelect(sel, options, allLabel, value) {
+  sel.innerHTML = `<option value="all">${allLabel}</option>` + options.map((u) => `<option value="${u.id}">${escapeHtml(u.label || u.name)}</option>`).join("");
+  sel.value = value !== "all" && options.some((u) => u.id === value) ? value : "all";
+}
+function syncFilterPopover(listKey) {
+  const ui = FILTER_UI[listKey], f = filtersFor(listKey);
+  const locSel = $("#" + ui.loc), mgrSel = $("#" + ui.mgr), agtSel = $("#" + ui.agt);
+  const locOptions = hierarchyLocationOptions();
+  locSel.innerHTML = (ME.role === "admin" ? '<option value="all">All Locations</option>' : "") + locOptions.map((l) => `<option value="${l.id}">${escapeHtml(l.name)}</option>`).join("");
+  locSel.value = locOptions.some((l) => l.id === f.location) ? f.location : "all";
+  locSel.disabled = ME.role !== "admin"; // Location Admin/Manager: pinned to their own location, never someone else's
+  $("#" + ui.locGroup).hidden = ME.role === "manager"; // a Manager's location is implied by their team - nothing to pick
+  if (ME.role === "manager") { mgrSel.innerHTML = `<option value="${ME.id}">${escapeHtml(ME.label)}</option>`; mgrSel.value = ME.id; mgrSel.disabled = true; }
+  else { populateFilterSelect(mgrSel, hierarchyManagerOptions(locSel.value), "All Managers", f.manager); mgrSel.disabled = false; }
+  populateFilterSelect(agtSel, hierarchyAgentOptions(locSel.value, mgrSel.value), "All Agents", f.agent);
+}
+const filterChipLabel = (key, id) => (key === "location" ? (LOCATIONS[id] || {}).name : (userById(id) || {}).label) || id;
+function renderFilterChips(listKey) {
+  const ui = FILTER_UI[listKey], f = filtersFor(listKey), box = $("#" + ui.chips), btnLabel = $("#" + ui.label);
+  const active = ["location", "manager", "agent"].filter((k) => f[k] !== "all");
+  const baseline = hierarchyDefaults(); // Location Admin/Manager: their own pinned scope never counts as an "active" filter chip
+  const shown = active.filter((k) => f[k] !== baseline[k]);
+  btnLabel.textContent = shown.length ? `Filter (${shown.length})` : "Filter";
+  if (!box) return;
+  if (!shown.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.innerHTML = shown.map((k) => `<span class="filter-chip">${escapeHtml(filterChipLabel(k, f[k]))}<button type="button" data-chip-remove="${k}" aria-label="Remove ${k} filter">&times;</button></span>`).join("")
+    + (shown.length > 1 ? `<button type="button" class="filter-chip-clear" data-chip-clear-all>Clear all</button>` : "");
+  $$('[data-chip-remove]', box).forEach((b) => on(b, "click", () => {
+    const key = b.getAttribute("data-chip-remove");
+    f[key] = baseline[key];
+    if (key === "location") { f.manager = baseline.manager; f.agent = baseline.agent; }
+    if (key === "manager") f.agent = baseline.agent;
+    renderFilterChips(listKey);
+    ui.render();
+  }));
+  const clearAllBtn = $('[data-chip-clear-all]', box);
+  if (clearAllBtn) on(clearAllBtn, "click", () => { Object.assign(f, baseline); renderFilterChips(listKey); ui.render(); });
+}
+function initHierarchyFilter(listKey) {
+  const ui = FILTER_UI[listKey];
+  on($("#" + ui.btn), "click", (e) => { e.stopPropagation(); closeAllPopovers(); syncFilterPopover(listKey); $("#" + ui.pop).classList.toggle("open"); });
+  on($("#" + ui.loc), "change", () => {
+    populateFilterSelect($("#" + ui.mgr), hierarchyManagerOptions($("#" + ui.loc).value), "All Managers", "all");
+    populateFilterSelect($("#" + ui.agt), hierarchyAgentOptions($("#" + ui.loc).value, "all"), "All Agents", "all");
+  });
+  on($("#" + ui.mgr), "change", () => {
+    const locSel = $("#" + ui.loc), mgrSel = $("#" + ui.mgr);
+    if (mgrSel.value !== "all" && !locSel.disabled) { const mgr = userById(mgrSel.value); if (mgr) locSel.value = mgr.locationId; }
+    populateFilterSelect($("#" + ui.agt), hierarchyAgentOptions(locSel.value, mgrSel.value), "All Agents", "all");
+  });
+  on($("#" + ui.apply), "click", () => {
+    const f = filtersFor(listKey);
+    f.location = $("#" + ui.loc).value; f.manager = $("#" + ui.mgr).value; f.agent = $("#" + ui.agt).value;
+    closeAllPopovers();
+    ui.render();
+  });
+  on($("#" + ui.clear), "click", () => { Object.assign(filtersFor(listKey), hierarchyDefaults()); closeAllPopovers(); ui.render(); });
+}
+
 function getFilteredSortedUpcoming() {
-  let list = visibleMeetings("upcoming");
-  const f = state.filters;
-  if (f.status !== "all") {
-    if (f.status === "Recurring") list = list.filter((m) => m.recurring !== "Does not repeat");
-    else list = list.filter((m) => m.status === f.status);
-  }
-  if (f.host !== "all") list = list.filter((m) => m.hostId === f.host);
-  if (f.type !== "all") list = list.filter((m) => m.meetingType === f.type);
-  if (f.date !== "all") {
-    list = list.filter((m) => {
-      const d = parseISO(m.date);
-      const diffDays = Math.round((d - TODAY) / 86400000);
-      if (f.date === "Today") return diffDays === 0;
-      if (f.date === "Tomorrow") return diffDays === 1;
-      if (f.date === "This Week") return diffDays >= 0 && diffDays <= 7;
-      return true;
-    });
-  }
+  let list = applyHierarchyFilter(visibleMeetings("upcoming"), "upcoming");
   if (state.search.trim()) {
     const q = state.search.trim().toLowerCase();
     list = list.filter((m) => m.title.toLowerCase().includes(q) || (userById(m.hostId)?.name || "").toLowerCase().includes(q) || (userById(m.hostId)?.label || "").toLowerCase().includes(q));
@@ -1118,8 +1216,9 @@ function timeToMinutes(t) { const [h, m] = t.split(":").map(Number); return h * 
 function renderUpcoming() {
   const visible = visibleMeetings("upcoming");
   const list = getFilteredSortedUpcoming();
-  $("#upcomingCount").textContent = `${visible.length} Meeting(S)`;
+  $("#upcomingCount").textContent = `${list.length} Meeting(S)`; // reflects the applied hierarchy filter, not just the raw RBAC-visible count
   $("#upcomingToolbar").hidden = visible.length === 0;
+  renderFilterChips("upcoming");
   if (state.listView === "list") {
     $("#upcomingListWrap").hidden = false;
     $("#calendarViewWrap").hidden = true;
@@ -1136,12 +1235,48 @@ function renderUpcoming() {
     $("#calendarViewWrap").hidden = false;
     renderCalendar();
   }
-  populateHostFilterOptions();
+}
+function getFilteredSortedOngoing() {
+  let list = applyHierarchyFilter(visibleMeetings("ongoing"), "ongoing");
+  if (state.ongoingSearch.trim()) {
+    const q = state.ongoingSearch.trim().toLowerCase();
+    list = list.filter((m) => m.title.toLowerCase().includes(q) || m.meetingCode.includes(q)
+      || (userById(m.hostId)?.name || "").toLowerCase().includes(q) || (userById(m.hostId)?.label || "").toLowerCase().includes(q)
+      || m.participants.some((id) => (userById(id)?.name || "").toLowerCase().includes(q)));
+  }
+  const sortKey = state.ongoingSort;
+  list.sort((a, b) => {
+    if (sortKey === "name-asc") return a.title.localeCompare(b.title);
+    if (sortKey === "name-desc") return b.title.localeCompare(a.title);
+    if (sortKey === "participants") return (b.participants.length + 1) - (a.participants.length + 1);
+    const aT = a.liveStartedAt || 0, bT = b.liveStartedAt || 0; // "earliest/latest" = how long each has been running
+    return sortKey === "time-desc" ? bT - aT : aT - bT;
+  });
+  return list;
 }
 function renderOngoing() {
-  const list = visibleMeetings("ongoing");
+  const visible = visibleMeetings("ongoing");
+  const list = getFilteredSortedOngoing();
   $("#ongoingCount").textContent = `${list.length} Meeting(S)`;
-  renderListInto($("#ongoingList"), list, "ongoing", "No active meetings right now", "Start a meeting to begin a video call.");
+  $("#ongoingToolbar").hidden = visible.length === 0;
+  renderFilterChips("ongoing");
+  const compact = state.ongoingListView === "compact";
+  $("#ongoingListWrap").hidden = compact;
+  $("#ongoingCompactWrap").hidden = !compact;
+  if (!visible.length) {
+    const box = `<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      <h4>No ongoing meetings</h4><p>There are currently no live meetings in your permitted scope.</p>
+      <button type="button" class="btn btn-outline btn-sm" data-goto-view="upcoming">View Upcoming</button></div>`;
+    $("#ongoingList").innerHTML = box; $("#ongoingCompactGrid").innerHTML = box;
+  } else if (!list.length) {
+    renderListInto($("#ongoingList"), [], "ongoing", "No meetings match your filters", "Try adjusting search or filters.");
+    $("#ongoingCompactGrid").innerHTML = `<div class="empty-state"><h4>No meetings match your filters</h4><p>Try adjusting search or filters.</p></div>`;
+  } else if (compact) {
+    $("#ongoingCompactGrid").innerHTML = `<div class="cal-card-grid">${list.map((m) => ongoingCompactCardHTML(m)).join("")}</div>`;
+  } else {
+    renderListInto($("#ongoingList"), list, "ongoing");
+  }
+  tickOngoingTimers();
 }
 function renderInvited() {
   const list = visibleMeetings("invited");
@@ -1153,12 +1288,12 @@ function renderPast() {
   $("#pastCount").textContent = `${list.length} Meeting(S)`;
   renderListInto($("#pastList"), list, "past", "No past meetings", "Ended meetings will appear here.");
 }
-function populateHostFilterOptions() {
-  const sel = $("#filterHost");
-  const current = sel.value;
-  const hostIds = Array.from(new Set(visibleMeetings("upcoming").map((m) => m.hostId)));
-  sel.innerHTML = '<option value="all">All Hosts</option>' + hostIds.map((id) => `<option value="${id}">${userById(id).name}</option>`).join("");
-  if (hostIds.includes(current)) sel.value = current;
+// every ongoing meeting's own elapsed-time readout, ticked in place every second - never a full re-render, so the list never jumps or flickers
+function tickOngoingTimers() {
+  $$('[data-live-elapsed]').forEach((el) => {
+    const found = findMeeting(el.getAttribute("data-live-elapsed"));
+    if (found) el.textContent = formatMMSS(Math.max(0, Math.floor((Date.now() - (found.meeting.liveStartedAt || Date.now())) / 1000)));
+  });
 }
 
 /* ============================================================
@@ -1175,7 +1310,7 @@ function renderCalendar() {
   const trailing = (7 - ((firstDow + daysInMonth) % 7)) % 7;
 
   const meetingsByDate = {};
-  visibleMeetings("upcoming").forEach((mt) => { (meetingsByDate[mt.date] = meetingsByDate[mt.date] || []).push(mt); });
+  applyHierarchyFilter(visibleMeetings("upcoming"), "upcoming").forEach((mt) => { (meetingsByDate[mt.date] = meetingsByDate[mt.date] || []).push(mt); });
 
   // a real 7-column month grid: muted, non-interactive lead-in/lead-out days from the adjacent months fill the first/last week, same as any SaaS calendar
   const isoOf = (yy, mm, dd) => `${yy}-${String(mm + 1).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
@@ -1253,24 +1388,11 @@ function renderCalendar() {
 function initUpcomingToolbar() {
   on($("#meetingSearchInput"), "input", (e) => { state.search = e.target.value; renderUpcoming(); });
 
-  on($("#filterBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#filterPopover").classList.toggle("open"); });
   on($("#sortBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#sortPopover").classList.toggle("open"); });
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".toolbar-popover-wrap")) closeAllPopovers();
   });
-  on($("#filterApply"), "click", () => {
-    state.filters.status = $("#filterStatus").value;
-    state.filters.host = $("#filterHost").value;
-    state.filters.date = $("#filterDate").value;
-    state.filters.type = $("#filterType").value;
-    closeAllPopovers();
-    renderUpcoming();
-  });
-  on($("#filterReset"), "click", () => {
-    state.filters = { status: "all", host: "all", date: "all", type: "all" };
-    $("#filterStatus").value = "all"; $("#filterHost").value = "all"; $("#filterDate").value = "all"; $("#filterType").value = "all";
-    renderUpcoming();
-  });
+  initHierarchyFilter("upcoming");
   $$('.popover-option[data-sort]').forEach((btn) => on(btn, "click", () => {
     state.sort = btn.getAttribute("data-sort");
     closeAllPopovers();
@@ -1282,6 +1404,29 @@ function initUpcomingToolbar() {
     state.listView = btn.getAttribute("data-list-view");
     renderUpcoming();
   }));
+  document.addEventListener("click", (e) => { if (e.target.closest("[data-goto-view]")) switchSidebarView(e.target.closest("[data-goto-view]").getAttribute("data-goto-view")); });
+}
+function initOngoingToolbar() {
+  on($("#ongoingSearchInput"), "input", (e) => {
+    state.ongoingSearch = e.target.value;
+    $("#ongoingSearchClear").classList.toggle("d-none", !e.target.value);
+    renderOngoing();
+  });
+  on($("#ongoingSearchClear"), "click", () => { $("#ongoingSearchInput").value = ""; state.ongoingSearch = ""; $("#ongoingSearchClear").classList.add("d-none"); renderOngoing(); });
+  on($("#ongoingSortBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#ongoingSortPopover").classList.toggle("open"); });
+  initHierarchyFilter("ongoing");
+  $$('.popover-option[data-ongoing-sort]').forEach((btn) => on(btn, "click", () => {
+    state.ongoingSort = btn.getAttribute("data-ongoing-sort");
+    closeAllPopovers();
+    renderOngoing();
+  }));
+  $$('#ongoingViewToggle .vt-btn').forEach((btn) => on(btn, "click", () => {
+    $$('#ongoingViewToggle .vt-btn').forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    state.ongoingListView = btn.getAttribute("data-ongoing-view");
+    renderOngoing();
+  }));
+  setInterval(tickOngoingTimers, 1000); // each ongoing meeting's own elapsed-time readout, updated in place - never a re-render
 }
 
 /* ============================================================
@@ -1347,6 +1492,8 @@ const MENU_CONFIG = {
     { label: "View Details", action: "view" },
     { label: "Join Meeting", action: "join" },
     { label: "Copy Meeting Link", action: "copy" },
+    { label: "Invite Participants", action: "invite" },
+    { label: "Meeting Settings", action: "settings" },
   ],
   invited: [
     { label: "View Details", action: "view" },
@@ -1368,6 +1515,7 @@ const MENU_CONFIG = {
 const MENU_PERM = {
   view: "meeting.view", info: "meeting.view", join: "meeting.join", edit: "meeting.edit", reschedule: "meeting.edit", copy: "meeting.view", invite: "meeting.invite",
   duplicate: "meeting.create", cancel: "meeting.cancel", delete: "meeting.delete", export: "data.export", "invited-members": "meeting.view", attendees: "participants.view", chat: "meeting.view",
+  settings: "meeting.settings",
 };
 const MENU_ICONS = {
   view: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -1384,6 +1532,7 @@ const MENU_ICONS = {
   chat: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   delete: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
   export: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  settings: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
 function openContextMenu(anchorBtn, meeting, listKey) {
@@ -1431,6 +1580,7 @@ function handleMenuAction(action, meeting, listKey) {
     case "reschedule": openRescheduleModal(meeting); break;
     case "copy": copyMeetingLink(meeting); break;
     case "invite": openInviteModal(meeting); break;
+    case "settings": openDetailsDrawer(meeting, "settings"); break;
     case "duplicate": duplicateMeeting(meeting); break;
     case "cancel": openCancelConfirm(meeting); break;
     case "delete": openDeleteMeetingConfirm(meeting); break;
@@ -5740,7 +5890,28 @@ function initCommandPalette() {
 /* ============================================================
    23. GLOBAL RENDER
    ============================================================ */
+// Video Meetings hero (Upcoming view): live count / participant count / avatars, derived from the signed-in user's own visible ongoing meetings
+function renderMeetingsHero() {
+  const avatarsBox = $("#vmHeroAvatars");
+  if (!avatarsBox) return;
+  const ongoing = visibleMeetings("ongoing");
+  const peopleIds = new Set();
+  let participantCount = 0;
+  ongoing.forEach((m) => {
+    peopleIds.add(m.hostId);
+    (m.participants || []).forEach((id) => peopleIds.add(id));
+    participantCount += (m.participants || []).length + 1;
+  });
+  const people = [...peopleIds].map(userById).filter(Boolean);
+  const shown = people.slice(0, 5);
+  const extra = people.length - shown.length;
+  avatarsBox.innerHTML = shown.map((u) => `<span class="mini-avatar" title="${escapeHtml(u.name)}">${u.initials}</span>`).join("") + (extra > 0 ? `<span class="mini-avatar">+${extra}</span>` : "");
+  $("#vmHeroLive").innerHTML = `<span class="live-status-dot"></span>${ongoing.length} Live`;
+  $("#vmHeroParticipants").textContent = participantCount;
+  $("#vmHeroLocation").textContent = ME.locationId ? ((LOCATIONS[ME.locationId] || {}).name || "—") : "All Locations";
+}
 function renderAllViews() {
+  renderMeetingsHero();
   renderUpcoming();
   renderOngoing();
   renderInvited();
@@ -5762,6 +5933,7 @@ function init() {
   initSidebarNav();
   initMainKeyboardScroll();
   initUpcomingToolbar();
+  initOngoingToolbar();
   initCardActionDelegation();
   initContextMenuGlobalClose();
   initScheduleModal();

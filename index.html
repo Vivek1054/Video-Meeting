@@ -252,12 +252,31 @@
 
     <!-- ===== UPCOMING VIEW ===== -->
     <section class="view" id="view-upcoming" data-view-section>
-      <div class="page-header-banner">
-        <div>
+      <div class="vm-hero">
+        <div class="vm-hero-glow" aria-hidden="true"></div>
+        <div class="vm-hero-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+        </div>
+        <div class="vm-hero-main">
           <h1>Video Meetings</h1>
           <p>Connect securely with your team and clients. Start, schedule, or join high-quality video conferences instantly.</p>
+          <div class="vm-hero-meta">
+            <div class="avatar-stack vm-hero-avatars" id="vmHeroAvatars"></div>
+            <span class="vm-hero-sep"></span>
+            <span class="vm-hero-live" id="vmHeroLive"><span class="live-status-dot"></span>0 Live</span>
+            <span class="vm-hero-sep"></span>
+            <span class="vm-hero-stat">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              <span id="vmHeroParticipants">0</span> Participants
+            </span>
+            <span class="vm-hero-sep"></span>
+            <span class="vm-hero-stat">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+              <span id="vmHeroLocation">—</span>
+            </span>
+          </div>
         </div>
-        <div class="header-actions">
+        <div class="header-actions vm-hero-actions">
           <button class="btn btn-primary" id="btnStartMeeting" type="button" data-perm="meeting.create" data-perm-mode="lock" data-perm-tip="Your role cannot start meetings.">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
             Start Meeting
@@ -286,30 +305,27 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input type="text" id="meetingSearchInput" placeholder="Search meetings..." />
         </div>
-        <div class="toolbar-popover-wrap">
+        <div class="toolbar-popover-wrap" id="filterWrap" data-perm="directory.view" data-perm-mode="hide" data-perm-tip="Your role has nothing to filter by.">
           <button class="btn btn-toolbar" id="filterBtn" type="button">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-            Filter
+            <span id="filterBtnLabel">Filter</span>
           </button>
-          <div class="popover" id="filterPopover">
-            <div class="popover-group">
-              <label>Status</label>
-              <select id="filterStatus"><option value="all">All</option><option value="Upcoming">Upcoming</option><option value="Starting Soon">Starting Soon</option><option value="Recurring">Recurring</option></select>
+          <div class="popover filter-popover" id="filterPopover">
+            <div class="popover-title">Filter Meetings</div>
+            <div class="popover-group" id="filterLocationGroup">
+              <label for="filterLocation">Location</label>
+              <select id="filterLocation"></select>
             </div>
-            <div class="popover-group">
-              <label>Host</label>
-              <select id="filterHost"><option value="all">All Hosts</option></select>
+            <div class="popover-group" id="filterManagerGroup">
+              <label for="filterManager">Manager / Supervisor</label>
+              <select id="filterManager"></select>
             </div>
-            <div class="popover-group">
-              <label>Date</label>
-              <select id="filterDate"><option value="all">All</option><option value="Today">Today</option><option value="Tomorrow">Tomorrow</option><option value="This Week">This Week</option></select>
-            </div>
-            <div class="popover-group">
-              <label>Meeting Type</label>
-              <select id="filterType"><option value="all">All</option><option value="Video">Video</option><option value="Audio + Video">Audio + Video</option></select>
+            <div class="popover-group" id="filterAgentGroup">
+              <label for="filterAgent">Agent</label>
+              <select id="filterAgent"></select>
             </div>
             <div class="popover-actions">
-              <button class="btn btn-ghost btn-sm" id="filterReset" type="button">Reset</button>
+              <button class="btn btn-ghost btn-sm" id="filterReset" type="button">Clear</button>
               <button class="btn btn-primary btn-sm" id="filterApply" type="button">Apply</button>
             </div>
           </div>
@@ -326,6 +342,7 @@
           </div>
         </div>
       </div>
+      <div class="filter-chips" id="filterChips" hidden></div>
 
       <div id="upcomingListWrap">
         <div class="meeting-list" id="upcomingList"></div>
@@ -337,10 +354,65 @@
     <section class="view" id="view-ongoing" data-view-section hidden>
       <div class="section-heading page-title-heading">
         <h3>Ongoing Meetings</h3>
-        <span class="info-dot"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></span>
+        <span class="live-status-pill"><span class="live-status-dot"></span>Live</span>
         <span class="count-badge" id="ongoingCount">0 Meeting(S)</span>
       </div>
-      <div class="meeting-list" id="ongoingList"></div>
+
+      <div class="list-toolbar" id="ongoingToolbar" hidden>
+        <div class="search-box">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="ongoingSearchInput" placeholder="Search meetings, host, or participant..." />
+          <button type="button" class="search-clear-btn d-none" id="ongoingSearchClear" aria-label="Clear search">&times;</button>
+        </div>
+        <div class="toolbar-popover-wrap" id="filterWrapOngoing" data-perm="directory.view" data-perm-mode="hide" data-perm-tip="Your role has nothing to filter by.">
+          <button class="btn btn-toolbar" id="filterBtnOngoing" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            <span id="filterBtnLabelOngoing">Filter</span>
+          </button>
+          <div class="popover filter-popover" id="filterPopoverOngoing">
+            <div class="popover-title">Filter Meetings</div>
+            <div class="popover-group" id="filterLocationGroupOngoing">
+              <label for="filterLocationOngoing">Location</label>
+              <select id="filterLocationOngoing"></select>
+            </div>
+            <div class="popover-group" id="filterManagerGroupOngoing">
+              <label for="filterManagerOngoing">Manager / Supervisor</label>
+              <select id="filterManagerOngoing"></select>
+            </div>
+            <div class="popover-group" id="filterAgentGroupOngoing">
+              <label for="filterAgentOngoing">Agent</label>
+              <select id="filterAgentOngoing"></select>
+            </div>
+            <div class="popover-actions">
+              <button class="btn btn-ghost btn-sm" id="filterResetOngoing" type="button">Clear</button>
+              <button class="btn btn-primary btn-sm" id="filterApplyOngoing" type="button">Apply</button>
+            </div>
+          </div>
+        </div>
+        <div class="toolbar-popover-wrap">
+          <button class="btn btn-toolbar" id="ongoingSortBtn" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="14" y2="9"/><line x1="4" y1="15" x2="10" y2="15"/><line x1="4" y1="21" x2="7" y2="21"/><path d="m17 4 3 3-3 3"/><path d="M20 7H14"/></svg>
+            Sort
+          </button>
+          <div class="popover" id="ongoingSortPopover">
+            <button class="popover-option" data-ongoing-sort="time-asc" type="button">Meeting time — Earliest</button>
+            <button class="popover-option" data-ongoing-sort="time-desc" type="button">Meeting time — Latest</button>
+            <button class="popover-option" data-ongoing-sort="name-asc" type="button">Meeting name A–Z</button>
+            <button class="popover-option" data-ongoing-sort="name-desc" type="button">Meeting name Z–A</button>
+            <button class="popover-option" data-ongoing-sort="participants" type="button">Participant count</button>
+          </div>
+        </div>
+        <div class="view-toggle" id="ongoingViewToggle">
+          <button class="vt-btn active" data-ongoing-view="list" type="button">List View</button>
+          <button class="vt-btn icon-vt-btn" data-ongoing-view="compact" type="button" title="Compact View" aria-label="Compact View"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
+        </div>
+      </div>
+      <div class="filter-chips" id="filterChipsOngoing" hidden></div>
+
+      <div id="ongoingListWrap">
+        <div class="meeting-list" id="ongoingList"></div>
+      </div>
+      <div id="ongoingCompactWrap" hidden><div id="ongoingCompactGrid"></div></div>
     </section>
 
     <!-- ===== INVITED VIEW ===== -->
