@@ -68,6 +68,13 @@ function mcmCloseSelect(select) {
   if (!select || select._mcmTrigger.getAttribute("aria-expanded") !== "true") return;
   bootstrap.Dropdown.getOrCreateInstance(select._mcmTrigger).hide();
 }
+// One shared listener for every enhanced select on the page (not one per dropdown): with autoClose:false, closing
+// on an outside click is entirely our own responsibility now.
+document.addEventListener("click", (e) => {
+  if (!mcmActiveSelect) return;
+  if (mcmActiveSelect._mcmTrigger.contains(e.target) || mcmActiveSelect._mcmMenu.contains(e.target)) return;
+  mcmCloseSelect(mcmActiveSelect);
+});
 function enhanceSelect(select) {
   if (select.dataset.mcmEnhanced || MCM_SELECT_SKIP_IDS.includes(select.id)) return;
   select.dataset.mcmEnhanced = "1";
@@ -128,17 +135,36 @@ function enhanceSelect(select) {
     select.value = opt.getAttribute("data-value");
     select.dispatchEvent(new Event("change", { bubbles: true }));
     mcmSelectSyncTrigger(select);
+    bootstrap.Dropdown.getOrCreateInstance(trigger).hide(); // explicit - see the autoClose:false note below
   });
   on(trigger, "click", (e) => {
     e.stopPropagation();
-    const bsDropdown = bootstrap.Dropdown.getOrCreateInstance(trigger, { popperConfig: { strategy: "fixed" } });
+    // autoClose:false: Bootstrap's own built-in "close on any click" listener is global (one document listener
+    // shared by every Dropdown instance on the page) and, observed empirically, could leave its internal shown/hidden
+    // state one step out of sync with this trigger's aria-expanded after a menu-item click closed it from under a
+    // *different* code path than the one that opened it - a later click would then silently no-op. Taking exclusive,
+    // explicit control of open/close/outside-click here (mirrors the ⋮ action menu's own approach) removes that class
+    // of bug entirely: this trigger's own click handler and mcmCloseActiveSelect() below are the only things that
+    // ever call show()/hide() on it.
+    const bsDropdown = bootstrap.Dropdown.getOrCreateInstance(trigger, { popperConfig: { strategy: "fixed" }, autoClose: false });
     if (trigger.getAttribute("aria-expanded") === "true") { bsDropdown.hide(); return; }
     if (mcmActiveSelect && mcmActiveSelect !== select) mcmCloseSelect(mcmActiveSelect);
     bsDropdown.show();
   });
-  on(trigger, "keydown", (e) => { // Bootstrap's own dropdown keyboard handling covers navigation/Escape once it's open; this is only "open it"
+  on(trigger, "keydown", (e) => {
     if (trigger.getAttribute("aria-expanded") === "true") return;
     if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); trigger.click(); }
+  });
+  // Bootstrap's own dropdown keyboard handling (Arrow nav, Escape-to-close) is wired to data-bs-toggle, which this
+  // trigger deliberately doesn't carry (see the click handler above) - so Escape needs its own explicit handling
+  // here, delegated across the trigger+menu, and it must stop the keypress from also reaching the page's broader
+  // "Escape closes everything" handler, so one press closes just this dropdown and leaves the Filter popup open.
+  on(dropdown, "keydown", (e) => {
+    if (e.key === "Escape" && trigger.getAttribute("aria-expanded") === "true") {
+      e.stopPropagation();
+      bootstrap.Dropdown.getOrCreateInstance(trigger).hide();
+      trigger.focus();
+    }
   });
   on(trigger, "show.bs.dropdown", () => {
     mcmActiveSelect = select;
@@ -272,7 +298,7 @@ function userDesc(u) { // the second line of each entry in the demo user switche
 const DEFAULT_SECURITY = {
   whoCanJoin: "Invited participants only",
   waitingRoom: true,
-  password: false,
+  password: false, passwordValue: "",
   allowBeforeHost: false,
   permMic: true, permCam: true, permScreen: false, permChat: true,
 };
@@ -919,12 +945,43 @@ function closeAllPopovers() {
   $$('.toolbar-popover-wrap > [aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
 let contextMenuAnchor = null;
+// The menu's natural (unclamped) size only depends on its current items, not on where the anchor is on screen - so
+// it's measured once per open and reused, instead of re-forcing layout on every open.
+let contextMenuNaturalHeight = 0, contextMenuWidth = 0, contextMenuOpenBelow = true, contextMenuOpenedAt = 0;
+function positionContextMenu(recalcSide) {
+  if (!contextMenuAnchor) return;
+  const menu = $("#meetingActionMenu");
+  const k = uiScale(), margin = 8 * k;
+  const rect = contextMenuAnchor.getBoundingClientRect();
+  const spaceBelow = window.innerHeight - rect.bottom - margin;
+  const spaceAbove = rect.top - margin;
+  const preferredMax = 180 * k; // ~4-5 rows by design (matches the 11.25rem in style.css)
+  if (recalcSide) contextMenuOpenBelow = spaceBelow >= contextMenuNaturalHeight || spaceBelow >= spaceAbove;
+  const openBelow = contextMenuOpenBelow;
+  const available = Math.max(140, openBelow ? spaceBelow : spaceAbove);
+  const menuHeight = Math.min(contextMenuNaturalHeight, available, preferredMax);
+  menu.style.maxHeight = menuHeight + "px";
+  let top = openBelow ? rect.bottom + 6 * k : rect.top - menuHeight - 6 * k;
+  top = Math.max(margin, Math.min(top, window.innerHeight - menuHeight - margin));
+  let left = rect.right - contextMenuWidth;
+  left = Math.max(margin, Math.min(left, window.innerWidth - contextMenuWidth - margin));
+  menu.style.top = top + "px";
+  menu.style.left = left + "px";
+}
+// Scrolling (any scrollable ancestor - capture:true catches it without needing to know which one) closes the menu
+// outright rather than trying to follow the row, so it never lags behind or looks detached mid-scroll. A resize
+// leaves it open and just re-checks space above/below/left/right, since the anchor doesn't move because of that.
+// The brief grace window ignores a scroll that's an incidental side effect of the very click that opened the menu
+// (e.g. the browser auto-scrolling a partially-off-screen row into view) rather than a genuine user scroll after.
+document.addEventListener("scroll", () => { if (contextMenuAnchor && Date.now() - contextMenuOpenedAt > 150) closeContextMenu(); }, true);
+window.addEventListener("resize", () => { if (contextMenuAnchor) positionContextMenu(true); });
 function closeContextMenu() {
+  if (contextMenuAnchor) contextMenuAnchor.classList.remove("active");
   contextMenuAnchor = null;
   const m = $("#meetingActionMenu");
   if (m.hidden || !m.classList.contains("open")) { m.hidden = true; return; }
   m.classList.remove("open");
-  setTimeout(() => { m.hidden = true; }, 140);
+  setTimeout(() => { m.hidden = true; }, 130);
 }
 
 document.addEventListener("click", (e) => {
@@ -1342,7 +1399,12 @@ function initHierarchyFilter(listKey) {
     closeAllPopovers();
     ui.render();
   });
-  on($("#" + ui.clear), "click", () => { Object.assign(filtersFor(listKey), hierarchyDefaults()); closeAllPopovers(); ui.render(); });
+  on($("#" + ui.clear), "click", () => {
+    Object.assign(filtersFor(listKey), hierarchyDefaults());
+    syncFilterPopover(listKey); // reflect the reset values in the Location/Manager/Agent selects
+    ui.render();
+    // Clear only resets the fields - the Filter popup itself stays open, unlike Apply
+  });
 }
 
 function getFilteredSortedUpcoming() {
@@ -1699,7 +1761,9 @@ const MENU_ICONS = {
 };
 
 function openContextMenu(anchorBtn, meeting, listKey) {
+  if (contextMenuAnchor) contextMenuAnchor.classList.remove("active"); // only one row's ⋮ is ever "active" at a time
   contextMenuAnchor = anchorBtn;
+  anchorBtn.classList.add("active");
   let menuItems = (MENU_CONFIG[listKey] || []).filter((item) => item.sep || can(MENU_PERM[item.action], meeting)); // only what this role may do with THIS meeting is offered
   if (listKey === "upcoming" && meeting.status === "Cancelled") {
     menuItems = menuItems.filter((item) => item.sep || ["view", "copy", "duplicate", "delete"].includes(item.action));
@@ -1710,11 +1774,15 @@ function openContextMenu(anchorBtn, meeting, listKey) {
     ? '<div class="context-menu-sep"></div>'
     : `<button class="context-menu-item ${item.danger ? "danger" : ""}" data-menu-action="${item.action}">${MENU_ICONS[item.action] || ""}${item.label}</button>`
   ).join("");
-  const rect = anchorBtn.getBoundingClientRect(), k = uiScale();
+
+  // Smart placement: measure the button and the menu's own natural (unclamped) size, pick above/below by whichever
+  // side actually has more room, then clamp both axes into the viewport with an 8px margin - never just "top:100%".
   menu.hidden = false;
-  const room = 8 * k, height = menu.offsetHeight; // the entries differ per role and list, so keep the menu's real height on screen
-  menu.style.top = Math.max(room, Math.min(rect.bottom + 6 * k, window.innerHeight - height - room)) + "px";
-  menu.style.left = Math.min(rect.left - 160 * k, window.innerWidth - 230 * k) + "px";
+  menu.style.maxHeight = "none"; // clear any max-height left over from the last time this menu opened, before measuring
+  contextMenuNaturalHeight = menu.scrollHeight;
+  contextMenuWidth = menu.offsetWidth;
+  contextMenuOpenedAt = Date.now();
+  positionContextMenu(true);
   requestAnimationFrame(() => requestAnimationFrame(() => menu.classList.add("open")));
 
   $$('[data-menu-action]', menu).forEach((btn) => {
@@ -1825,6 +1893,19 @@ function renderScheduleChips() {
   }));
 }
 
+// unambiguous mixed-case charset (no 0/O/1/I/l) so a read-aloud or hand-typed password is never confusing
+function genSchedulePassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const part = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return `${part()}-${part()}`;
+}
+function setSchedulePassword(on, value) {
+  $("#fieldPassword").checked = on;
+  if (value) $("#fieldPasswordInput").value = value;
+  $("#err-fieldPasswordInput").textContent = "";
+  bootstrap.Collapse.getOrCreateInstance($("#fieldPasswordFields"), { toggle: false })[on ? "show" : "hide"]();
+}
+
 function resetScheduleForm() {
   $("#scheduleForm").reset();
   $$("#scheduleForm select").forEach(mcmSelectRefresh); // native form.reset() bypasses every hook the custom-select trigger relies on to stay in sync
@@ -1847,7 +1928,9 @@ function resetScheduleForm() {
   $("#fieldWaitingRoom").checked = true;
   $("#fieldAutoRecord").checked = false;
   $("#fieldRecordingAccess").checked = false;
-  $("#fieldPassword").checked = false;
+  $("#fieldPasswordInput").value = ""; $("#fieldPasswordInput").type = "password";
+  $("#fieldPasswordVisBtn").innerHTML = '<i class="bi bi-eye"></i>';
+  setSchedulePassword(false);
   $("#fieldAllowBeforeHost").checked = false;
   $("#fieldReminderToggle").checked = true;
   $("#permMic").checked = true; $("#permCam").checked = true; $("#permScreen").checked = false; $("#permChat").checked = true;
@@ -1888,7 +1971,7 @@ function openScheduleModal(mode, meeting) {
     $("#fieldWaitingRoom").checked = meeting.security.waitingRoom;
     $("#fieldAutoRecord").checked = !!meeting.security.autoRecord;
     $("#fieldRecordingAccess").checked = !!meeting.security.recordingAccess;
-    $("#fieldPassword").checked = meeting.security.password;
+    setSchedulePassword(!!meeting.security.password, meeting.security.password ? (meeting.security.passwordValue || genSchedulePassword()) : undefined);
     $("#fieldAllowBeforeHost").checked = meeting.security.allowBeforeHost;
     $("#permMic").checked = meeting.security.permMic;
     $("#permCam").checked = meeting.security.permCam;
@@ -2041,6 +2124,36 @@ function initScheduleModal() {
     $("#descriptionCounter").textContent = `${$("#fieldDescription").value.length}/500`;
   });
 
+  on($("#fieldPassword"), "change", (e) => {
+    const on = e.target.checked;
+    // turning it on again in the same session keeps whatever password was already there instead of replacing it
+    setSchedulePassword(on, on ? ($("#fieldPasswordInput").value.trim() || genSchedulePassword()) : undefined);
+  });
+  on($("#fieldPasswordVisBtn"), "click", () => {
+    const input = $("#fieldPasswordInput"), show = input.type === "password";
+    input.type = show ? "text" : "password";
+    $("#fieldPasswordVisBtn").innerHTML = `<i class="bi bi-eye${show ? "-slash" : ""}"></i>`;
+    $("#fieldPasswordVisBtn").title = $("#fieldPasswordVisBtn").ariaLabel = show ? "Hide password" : "Show password";
+  });
+  on($("#fieldPasswordGenBtn"), "click", () => {
+    $("#fieldPasswordInput").value = genSchedulePassword();
+    $("#err-fieldPasswordInput").textContent = "";
+  });
+  on($("#fieldPasswordCopyBtn"), "click", () => {
+    const val = $("#fieldPasswordInput").value;
+    if (!val) return;
+    const btn = $("#fieldPasswordCopyBtn");
+    const done = () => {
+      const original = btn.innerHTML;
+      btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+      btn.classList.add("copied");
+      toast("Password copied");
+      setTimeout(() => { btn.innerHTML = original; btn.classList.remove("copied"); }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(val).then(done).catch(done);
+    else done();
+  });
+
   $$(".duration-pill", $("#durationPills")).forEach((btn) => on(btn, "click", () => setDurationPill(btn.getAttribute("data-duration"))));
 
   on($("#meetingSettingsTrigger"), "click", () => {
@@ -2059,10 +2172,12 @@ function initScheduleModal() {
     const date = $("#fieldDate").value;
     const time = getTimeSelectsAs24h();
     const hostId = $("#fieldHost").value || ME.id;
-    $("#err-fieldTitle").textContent = ""; $("#err-fieldDate").textContent = ""; $("#err-fieldTime").textContent = "";
+    const passwordOn = $("#fieldPassword").checked, passwordValue = $("#fieldPasswordInput").value.trim();
+    $("#err-fieldTitle").textContent = ""; $("#err-fieldDate").textContent = ""; $("#err-fieldTime").textContent = ""; $("#err-fieldPasswordInput").textContent = "";
     if (!title) { $("#err-fieldTitle").textContent = "Meeting topic is required."; valid = false; }
     if (!date) { $("#err-fieldDate").textContent = "Meeting date is required."; valid = false; }
     if (!time) { $("#err-fieldTime").textContent = "Start time is required."; valid = false; }
+    if (passwordOn && !passwordValue) { $("#err-fieldPasswordInput").textContent = "A meeting password is required."; valid = false; }
     if (!valid) return;
 
     const existingId = $("#scheduleMeetingId").value;
@@ -2083,7 +2198,7 @@ function initScheduleModal() {
         waitingRoom: $("#fieldWaitingRoom").checked,
         autoRecord: $("#fieldAutoRecord").checked,
         recordingAccess: $("#fieldRecordingAccess").checked,
-        password: $("#fieldPassword").checked,
+        password: passwordOn, passwordValue: passwordOn ? passwordValue : "",
         allowBeforeHost: $("#fieldAllowBeforeHost").checked,
         permMic: $("#permMic").checked, permCam: $("#permCam").checked,
         permScreen: $("#permScreen").checked, permChat: $("#permChat").checked,

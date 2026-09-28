@@ -255,7 +255,7 @@
       <div class="vm-hero">
         <div class="vm-hero-glow" aria-hidden="true"></div>
         <div class="vm-hero-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
         </div>
         <div class="vm-hero-main">
           <h1>Video Meetings</h1>
@@ -468,7 +468,7 @@
             Filter
             <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
-          <div class="popover" id="recFilterPopover">
+          <div class="popover filter-popover" id="recFilterPopover">
             <div class="popover-group">
               <label>Owner</label>
               <select id="recFilterOwner"><option value="all">All Owners</option></select>
@@ -646,6 +646,21 @@
             </div>
             <span class="field-error" id="err-scheduleInvite"></span>
             <div class="chip-list" id="scheduleChips"></div>
+          </div>
+        </div>
+
+        <div class="collapse" id="fieldPasswordFields">
+          <div class="form-group schedule-password-group mb-0">
+            <label for="fieldPasswordInput">Meeting Password</label>
+            <div class="schedule-password-field">
+              <input type="password" id="fieldPasswordInput" autocomplete="off" aria-label="Meeting password" />
+              <div class="schedule-password-actions">
+                <button type="button" class="schedule-password-btn" id="fieldPasswordVisBtn" title="Show password" aria-label="Show password"><i class="bi bi-eye"></i></button>
+                <button type="button" class="schedule-password-btn" id="fieldPasswordGenBtn" title="Generate a new password" aria-label="Generate a new password"><i class="bi bi-arrow-repeat"></i></button>
+                <button type="button" class="schedule-password-btn" id="fieldPasswordCopyBtn" title="Copy password" aria-label="Copy password"><i class="bi bi-clipboard"></i></button>
+              </div>
+            </div>
+            <span class="field-error" id="err-fieldPasswordInput"></span>
           </div>
         </div>
 
