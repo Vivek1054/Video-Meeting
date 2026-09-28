@@ -142,7 +142,7 @@
         <button class="rbac-pill" id="roleSwitchBtn" type="button" data-role="admin" data-bs-toggle="dropdown" data-bs-offset="30,6" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" aria-haspopup="menu" aria-label="Signed in as Admin (demo user). Switch user">
           <span class="rbac-pill-icon" id="roleSwitchIcon" aria-hidden="true"></span>
           <span id="roleSwitchLabel">Admin</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+          <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
         <ul class="dropdown-menu dropdown-menu-end rbac-menu p-1" id="roleMenu" role="menu" aria-label="Demo user switcher"></ul>
       </div>
@@ -306,9 +306,10 @@
           <input type="text" id="meetingSearchInput" placeholder="Search meetings..." />
         </div>
         <div class="toolbar-popover-wrap" id="filterWrap" data-perm="directory.view" data-perm-mode="hide" data-perm-tip="Your role has nothing to filter by.">
-          <button class="btn btn-toolbar" id="filterBtn" type="button">
+          <button class="btn btn-toolbar" id="filterBtn" type="button" aria-expanded="false">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
             <span id="filterBtnLabel">Filter</span>
+            <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
           <div class="popover filter-popover" id="filterPopover">
             <div class="popover-title">Filter Meetings</div>
@@ -331,9 +332,10 @@
           </div>
         </div>
         <div class="toolbar-popover-wrap">
-          <button class="btn btn-toolbar" id="sortBtn" type="button">
+          <button class="btn btn-toolbar" id="sortBtn" type="button" aria-expanded="false">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="14" y2="9"/><line x1="4" y1="15" x2="10" y2="15"/><line x1="4" y1="21" x2="7" y2="21"/><path d="m17 4 3 3-3 3"/><path d="M20 7H14"/></svg>
             Sort
+            <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
           <div class="popover" id="sortPopover">
             <button class="popover-option" data-sort="soonest" type="button">Soonest First</button>
@@ -365,9 +367,10 @@
           <button type="button" class="search-clear-btn d-none" id="ongoingSearchClear" aria-label="Clear search">&times;</button>
         </div>
         <div class="toolbar-popover-wrap" id="filterWrapOngoing" data-perm="directory.view" data-perm-mode="hide" data-perm-tip="Your role has nothing to filter by.">
-          <button class="btn btn-toolbar" id="filterBtnOngoing" type="button">
+          <button class="btn btn-toolbar" id="filterBtnOngoing" type="button" aria-expanded="false">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
             <span id="filterBtnLabelOngoing">Filter</span>
+            <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
           <div class="popover filter-popover" id="filterPopoverOngoing">
             <div class="popover-title">Filter Meetings</div>
@@ -390,9 +393,10 @@
           </div>
         </div>
         <div class="toolbar-popover-wrap">
-          <button class="btn btn-toolbar" id="ongoingSortBtn" type="button">
+          <button class="btn btn-toolbar" id="ongoingSortBtn" type="button" aria-expanded="false">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="14" y2="9"/><line x1="4" y1="15" x2="10" y2="15"/><line x1="4" y1="21" x2="7" y2="21"/><path d="m17 4 3 3-3 3"/><path d="M20 7H14"/></svg>
             Sort
+            <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
           <div class="popover" id="ongoingSortPopover">
             <button class="popover-option" data-ongoing-sort="time-asc" type="button">Meeting time — Earliest</button>
@@ -459,9 +463,10 @@
           <input type="text" id="recordingSearchInput" placeholder="Search recordings..." />
         </div>
         <div class="toolbar-popover-wrap">
-          <button class="btn btn-toolbar" id="recFilterBtn" type="button">
+          <button class="btn btn-toolbar" id="recFilterBtn" type="button" aria-expanded="false">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
             Filter
+            <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
           <div class="popover" id="recFilterPopover">
             <div class="popover-group">
@@ -479,9 +484,10 @@
           </div>
         </div>
         <div class="toolbar-popover-wrap">
-          <button class="btn btn-toolbar" id="recSortBtn" type="button">
+          <button class="btn btn-toolbar" id="recSortBtn" type="button" aria-expanded="false">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="14" y2="9"/><line x1="4" y1="15" x2="10" y2="15"/><line x1="4" y1="21" x2="7" y2="21"/><path d="m17 4 3 3-3 3"/><path d="M20 7H14"/></svg>
             Sort
+            <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
           </button>
           <div class="popover" id="recSortPopover">
             <button class="popover-option" data-rec-sort="newest" type="button">Newest</button>
@@ -907,6 +913,7 @@
                     <select class="form-select form-select-sm" id="lobbyCamSelect"><option>Integrated Camera</option><option>USB HD Webcam</option></select>
                     <span class="badge bg-primary-subtle text-primary" id="cameraHdBadge">HD</span>
                   </div>
+                  <span class="small d-inline-flex align-items-center gap-1 lobby-min-0 text-truncate mt-1" id="camTestStatus" role="status" aria-live="polite" hidden><i class="bi bi-circle-fill text-body-secondary mic-test-icon" id="camTestIcon" aria-hidden="true"></i><span id="camTestText"></span></span>
                 </div>
               </div>
 
@@ -918,6 +925,7 @@
                     <select class="form-select form-select-sm" id="lobbySpeakerSelect"><option>Default - Speakers (Realtek(R) Audio)</option></select>
                     <button type="button" class="btn btn-outline btn-sm mic-test-btn" id="startSpeakerTestBtn">Test</button>
                   </div>
+                  <span class="small d-inline-flex align-items-center gap-1 lobby-min-0 text-truncate mt-1" id="speakerTestStatus" role="status" aria-live="polite" hidden><i class="bi bi-circle-fill text-body-secondary mic-test-icon" id="speakerTestIcon" aria-hidden="true"></i><span id="speakerTestText"></span></span>
                 </div>
               </div>
             </div>
@@ -1036,7 +1044,7 @@
 
       <div class="live-min-0 flex-grow-1 position-relative">
         <button class="live-title-btn d-flex align-items-center gap-1 fw-semibold" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Meeting menu">
-          <span class="text-truncate" id="liveMeetingTitle">Meeting</span><i class="bi bi-chevron-down small"></i>
+          <span class="text-truncate" id="liveMeetingTitle">Meeting</span><i class="bi bi-chevron-down small chevron"></i>
         </button>
         <ul class="dropdown-menu">
           <li><button class="dropdown-item" type="button" data-live-action="details"><i class="bi bi-info-circle me-2"></i>Meeting details</button></li>
@@ -1059,7 +1067,7 @@
 
         <div class="position-relative">
           <button class="live-pill" id="liveLayoutBtn" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Layout">
-            <i class="bi bi-grid"></i><span class="d-none d-lg-inline">Layout</span><i class="bi bi-chevron-down small d-none d-sm-inline"></i>
+            <i class="bi bi-grid"></i><span class="d-none d-lg-inline">Layout</span><i class="bi bi-chevron-down small d-none d-sm-inline chevron"></i>
           </button>
           <ul class="dropdown-menu dropdown-menu-end" id="liveLayoutMenu">
             <li><button class="dropdown-item d-flex align-items-center gap-2 active" type="button" data-live-layout="speaker"><i class="bi bi-person-video3"></i>Speaker View<i class="bi bi-check2 ms-auto live-check"></i></button></li>
@@ -1489,7 +1497,7 @@
             <div class="d-flex align-items-center gap-2 mb-2 small" id="liveToRow">
               <span class="text-body-secondary">To:</span>
               <div class="dropup position-relative">
-                <button class="live-to-btn" id="liveToBtn" type="button" data-bs-toggle="dropdown" aria-expanded="false" data-bs-popper-config='{"strategy":"fixed"}'><span id="liveToLabel">Everyone</span><i class="bi bi-chevron-down"></i></button>
+                <button class="live-to-btn" id="liveToBtn" type="button" data-bs-toggle="dropdown" aria-expanded="false" data-bs-popper-config='{"strategy":"fixed"}'><span id="liveToLabel">Everyone</span><i class="bi bi-chevron-down chevron"></i></button>
                 <ul class="dropdown-menu live-to-menu" id="liveToMenu"></ul>
               </div>
             </div>

@@ -30,6 +30,132 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* ============================================================
+   0b. CUSTOM SELECT - one reusable rotating-chevron dropdown for every <select> in the app
+   ============================================================
+   A native <select> exposes no real "is the popup open" state to CSS/JS, so a smoothly rotating chevron
+   isn't achievable on it as-is. Every <select> is progressively enhanced into a real combobox instead: the
+   original <select> stays in the DOM completely unchanged (same id, same value, same "change" event, still
+   the thing every existing line of code reads/writes/listens to) but visually hidden; a trigger button + a
+   Bootstrap dropdown listbox take its place, giving a real open/close state (so the chevron always matches
+   reality), non-clipping "fixed" popper positioning (the same trick #lobbyFxPanel already relies on), and
+   free ArrowUp/Down/Home/End keyboard cycling from Bootstrap's own dropdown behaviour. A MutationObserver
+   keeps the listbox in sync whenever existing code repopulates the select's <option>s or (dis/en)ables it;
+   the trigger also always re-reads the select's current value right before it opens, to cover a plain
+   `select.value = x` property set, which - unlike innerHTML - fires no observable DOM mutation. */
+const MCM_SELECT_SKIP_IDS = ["fieldHost"]; // data-only field, never shown to the user
+const mcmSelectLabel = (select) => { const opt = select.options[select.selectedIndex]; return opt ? opt.textContent.trim() : ""; };
+function mcmSelectSyncTrigger(select) {
+  const trigger = select._mcmTrigger;
+  if (!trigger) return;
+  trigger.querySelector(".mcm-select-label").textContent = mcmSelectLabel(select);
+  trigger.disabled = select.disabled;
+}
+function mcmSelectRenderMenu(select) {
+  const menu = select._mcmMenu;
+  if (!menu) return;
+  menu.innerHTML = Array.from(select.options).map((opt) =>
+    `<button type="button" class="dropdown-item mcm-select-option" role="option" data-value="${escapeHtml(opt.value)}" aria-selected="${opt.selected}"${opt.disabled ? " disabled" : ""}>${escapeHtml(opt.textContent.trim())}</button>`
+  ).join("");
+}
+function mcmSelectRefresh(select) { mcmSelectRenderMenu(select); mcmSelectSyncTrigger(select); }
+// ONE active custom-select dropdown at a time, tracked explicitly - opening a new one always closes whichever
+// select this variable currently points to, and the trigger's own click handler is the single place that
+// decides open vs close (it reads aria-expanded itself rather than trusting an implicit toggle), so there is
+// exactly one source of truth for "is this one open" and no way for two mechanisms to fight over it.
+let mcmActiveSelect = null;
+function mcmCloseSelect(select) {
+  if (!select || select._mcmTrigger.getAttribute("aria-expanded") !== "true") return;
+  bootstrap.Dropdown.getOrCreateInstance(select._mcmTrigger).hide();
+}
+function enhanceSelect(select) {
+  if (select.dataset.mcmEnhanced || MCM_SELECT_SKIP_IDS.includes(select.id)) return;
+  select.dataset.mcmEnhanced = "1";
+
+  const wrap = document.createElement("span");
+  wrap.className = "mcm-select-wrap";
+  select.parentNode.insertBefore(wrap, select);
+
+  const dropdown = document.createElement("span");
+  dropdown.className = "dropdown mcm-select-dropdown";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  // NOT data-bs-toggle="dropdown": that wires Bootstrap's own implicit click delegate, which is one more moving
+  // part to reason about once this button is nested this deeply. The click handler below drives the Dropdown
+  // API directly and explicitly instead, so "does this click open or close it" is never in question.
+  trigger.className = ("mcm-select-trigger " + select.className).trim();
+  trigger.setAttribute("data-bs-popper-config", '{"strategy":"fixed"}');
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.innerHTML = '<span class="mcm-select-label"></span><span class="mcm-select-chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>';
+
+  const menu = document.createElement("div");
+  menu.className = "dropdown-menu mcm-select-menu";
+  menu.setAttribute("role", "listbox");
+
+  if (select.id) {
+    const labelEl = document.querySelector(`label[for="${select.id}"]`);
+    if (labelEl) { if (!labelEl.id) labelEl.id = select.id + "-mcmLabel"; trigger.setAttribute("aria-labelledby", labelEl.id); }
+  }
+
+  select.classList.add("mcm-select-native");
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+
+  wrap.appendChild(select);
+  dropdown.appendChild(trigger);
+  dropdown.appendChild(menu);
+  wrap.appendChild(dropdown);
+  select._mcmTrigger = trigger;
+  select._mcmMenu = menu;
+
+  // existing code sets `.value =` / `.disabled =` as plain property assignments in several places (never through
+  // setAttribute), which a MutationObserver cannot see at all - wrapping both accessors is what makes the trigger
+  // provably stay in sync (not just "in sync because it happens to run right after an innerHTML repopulation").
+  ["value", "disabled"].forEach((prop) => {
+    const native = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, prop);
+    Object.defineProperty(select, prop, {
+      configurable: true,
+      get() { return native.get.call(select); },
+      set(v) { native.set.call(select, v); mcmSelectSyncTrigger(select); },
+    });
+  });
+
+  on(menu, "click", (e) => {
+    const opt = e.target.closest(".mcm-select-option");
+    if (!opt || opt.disabled) return;
+    select.value = opt.getAttribute("data-value");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    mcmSelectSyncTrigger(select);
+  });
+  on(trigger, "click", (e) => {
+    e.stopPropagation();
+    const bsDropdown = bootstrap.Dropdown.getOrCreateInstance(trigger, { popperConfig: { strategy: "fixed" } });
+    if (trigger.getAttribute("aria-expanded") === "true") { bsDropdown.hide(); return; }
+    if (mcmActiveSelect && mcmActiveSelect !== select) mcmCloseSelect(mcmActiveSelect);
+    bsDropdown.show();
+  });
+  on(trigger, "keydown", (e) => { // Bootstrap's own dropdown keyboard handling covers navigation/Escape once it's open; this is only "open it"
+    if (trigger.getAttribute("aria-expanded") === "true") return;
+    if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); trigger.click(); }
+  });
+  on(trigger, "show.bs.dropdown", () => {
+    mcmActiveSelect = select;
+    mcmSelectRefresh(select);
+    // `position:fixed` (the "fixed" popper strategy every dropdown here uses to escape clipping) resolves a
+    // percentage width against the VIEWPORT, not the trigger - that's what stretched every menu edge-to-edge.
+    // Measuring the trigger's real rendered width and setting it explicitly is the only way to match it exactly.
+    menu.style.width = trigger.getBoundingClientRect().width + "px";
+  });
+  on(trigger, "hidden.bs.dropdown", () => { if (mcmActiveSelect === select) mcmActiveSelect = null; });
+  on(select, "change", () => mcmSelectSyncTrigger(select));
+  new MutationObserver(() => mcmSelectRefresh(select)).observe(select, { childList: true, attributes: true, attributeFilter: ["disabled"] });
+
+  mcmSelectRefresh(select);
+}
+function enhanceAllSelects() { $$("select").forEach(enhanceSelect); }
+
 const TODAY = new Date(2026, 8, 23); // 2026-09-23
 const TODAY_ISO = "2026-09-23";
 
@@ -771,13 +897,16 @@ function openModal(id) {
   requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("open")));
 }
 function closeModal(id) {
-  if (id === "startModalOverlay") { stopLobbyCamera(); fxAudio.stop(); resetMicTest(); }
+  if (id === "startModalOverlay") { stopLobbyCamera(); fxAudio.stop(); resetMicTest(); clearDeviceTestTimers(); deviceTest.phase = "idle"; deviceTest.current = -1; deviceTest.results = {}; }
   const el = document.getElementById(id);
   if (!el || el.hidden || !el.classList.contains("open")) { if (el) el.hidden = true; return; }
   el.classList.remove("open");
   setTimeout(() => { el.hidden = true; }, 180);
 }
-function closeAllPopovers() { $$(".popover.open").forEach((p) => p.classList.remove("open")); }
+function closeAllPopovers() {
+  $$(".popover.open").forEach((p) => p.classList.remove("open"));
+  $$('.toolbar-popover-wrap > [aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
+}
 let contextMenuAnchor = null;
 function closeContextMenu() {
   contextMenuAnchor = null;
@@ -1177,7 +1306,16 @@ function renderFilterChips(listKey) {
 }
 function initHierarchyFilter(listKey) {
   const ui = FILTER_UI[listKey];
-  on($("#" + ui.btn), "click", (e) => { e.stopPropagation(); closeAllPopovers(); syncFilterPopover(listKey); $("#" + ui.pop).classList.toggle("open"); });
+  on($("#" + ui.btn), "click", (e) => {
+    e.stopPropagation();
+    const pop = $("#" + ui.pop);
+    const wasOpen = pop.classList.contains("open");
+    closeAllPopovers(); // always closes THIS popover too, so a second click on the same button must stop here rather than re-toggling it back open
+    if (wasOpen) return;
+    syncFilterPopover(listKey);
+    pop.classList.add("open");
+    e.currentTarget.setAttribute("aria-expanded", "true");
+  });
   on($("#" + ui.loc), "change", () => {
     populateFilterSelect($("#" + ui.mgr), hierarchyManagerOptions($("#" + ui.loc).value), "All Managers", "all");
     populateFilterSelect($("#" + ui.agt), hierarchyAgentOptions($("#" + ui.loc).value, "all"), "All Agents", "all");
@@ -1388,7 +1526,14 @@ function renderCalendar() {
 function initUpcomingToolbar() {
   on($("#meetingSearchInput"), "input", (e) => { state.search = e.target.value; renderUpcoming(); });
 
-  on($("#sortBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#sortPopover").classList.toggle("open"); });
+  on($("#sortBtn"), "click", (e) => {
+    e.stopPropagation();
+    const wasOpen = $("#sortPopover").classList.contains("open");
+    closeAllPopovers();
+    if (wasOpen) return;
+    $("#sortPopover").classList.add("open");
+    e.currentTarget.setAttribute("aria-expanded", "true");
+  });
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".toolbar-popover-wrap")) closeAllPopovers();
   });
@@ -1413,7 +1558,14 @@ function initOngoingToolbar() {
     renderOngoing();
   });
   on($("#ongoingSearchClear"), "click", () => { $("#ongoingSearchInput").value = ""; state.ongoingSearch = ""; $("#ongoingSearchClear").classList.add("d-none"); renderOngoing(); });
-  on($("#ongoingSortBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#ongoingSortPopover").classList.toggle("open"); });
+  on($("#ongoingSortBtn"), "click", (e) => {
+    e.stopPropagation();
+    const wasOpen = $("#ongoingSortPopover").classList.contains("open");
+    closeAllPopovers();
+    if (wasOpen) return;
+    $("#ongoingSortPopover").classList.add("open");
+    e.currentTarget.setAttribute("aria-expanded", "true");
+  });
   initHierarchyFilter("ongoing");
   $$('.popover-option[data-ongoing-sort]').forEach((btn) => on(btn, "click", () => {
     state.ongoingSort = btn.getAttribute("data-ongoing-sort");
@@ -1664,6 +1816,7 @@ function renderScheduleChips() {
 
 function resetScheduleForm() {
   $("#scheduleForm").reset();
+  $$("#scheduleForm select").forEach(mcmSelectRefresh); // native form.reset() bypasses every hook the custom-select trigger relies on to stay in sync
   $("#scheduleMeetingId").value = "";
   populateHostSelect();
   $("#fieldHost").value = ME.id;
@@ -2791,6 +2944,107 @@ function runMicTest() { // a fresh analysis every time, so the result belongs to
   if (!lobbyIsOn("#startMicBtn")) setLobbyMic(true); else fxAudio.start(fxMicDeviceId("lobby"));
 }
 
+/* ---- Device test: walks Microphone -> Speaker -> Camera, stoppable at any moment ----
+   Both the header "Test Devices" button and the Speaker row's own "Test" button drive this SAME state, so they
+   can never disagree about what's running - clicking either one starts/stops the one test, and both relabel
+   together. Results show inline on each of the three rows (mic reuses its own existing real analyser-driven
+   status line unchanged; camera/speaker get an equivalent line each) - there is no separate popup/panel.
+   Microphone uses the real analyser-based micTest above; Speaker plays a short best-effort tone (never blocks
+   on it - autoplay can be refused); Camera reads the live preview's actual track state. */
+const DEVICE_TEST_ROWS = [
+  { key: "mic", label: "Microphone", testingText: "Testing microphone…" },
+  { key: "speaker", label: "Speaker", testingText: "Testing speaker…" },
+  { key: "camera", label: "Camera", testingText: "Testing camera…" },
+];
+const deviceTest = { phase: "idle", current: -1, results: {}, phaseTimer: 0, audioCtx: null };
+function deviceTestRowState(i) {
+  const key = DEVICE_TEST_ROWS[i].key;
+  if (deviceTest.results[key]) return deviceTest.results[key]; // "pass" | "fail"
+  return deviceTest.current === i ? "active" : "pending";
+}
+function renderDeviceTestRow(i, boxId, iconId, textId) {
+  const box = $("#" + boxId);
+  if (!box) return;
+  const state = deviceTestRowState(i);
+  if (state === "pending") { box.hidden = true; return; }
+  const row = DEVICE_TEST_ROWS[i];
+  const icon = { active: "bi-circle-fill text-success", pass: "bi-check-lg text-success", fail: "bi-circle-fill text-danger" }[state];
+  const text = state === "active" ? row.testingText : state === "pass" ? `${row.label} working` : `${row.label} test failed`;
+  box.hidden = false;
+  $("#" + iconId).className = `bi ${icon} mic-test-icon`;
+  $("#" + textId).textContent = text;
+}
+function renderDeviceTestUi() {
+  // Microphone's own #micTestStatus/#micTestIcon/#micTestText already reflect this phase via setMicTest(), unchanged
+  renderDeviceTestRow(1, "speakerTestStatus", "speakerTestIcon", "speakerTestText");
+  renderDeviceTestRow(2, "camTestStatus", "camTestIcon", "camTestText");
+  const running = deviceTest.phase === "running", failed = deviceTest.phase === "failure";
+  const topBtn = $("#startTestDevicesBtn");
+  if (topBtn) topBtn.innerHTML = running ? '<i class="bi bi-stop-fill me-1"></i>Stop Test' : failed ? "Try Again" : "Test Devices";
+  const spkBtn = $("#startSpeakerTestBtn");
+  if (spkBtn) spkBtn.innerHTML = running ? '<i class="bi bi-stop-fill me-1"></i>Stop Test' : failed ? "Try Again" : "Test";
+}
+function closeDeviceTestAudio() { if (deviceTest.audioCtx) { try { deviceTest.audioCtx.close(); } catch { /* already closed */ } deviceTest.audioCtx = null; } }
+function clearDeviceTestTimers() { clearTimeout(deviceTest.phaseTimer); deviceTest.phaseTimer = 0; closeDeviceTestAudio(); }
+function runDeviceMicPhase(i) {
+  runMicTest(); // real analyser-based test - unchanged
+  const check = () => {
+    if (deviceTest.current !== i) return; // stopped or superseded
+    if (micTest.state === "microphone-working") return finishDeviceTestPhase(i, true);
+    if (micTest.state === "no-audio-detected" || micTest.state === "error") return finishDeviceTestPhase(i, false);
+    deviceTest.phaseTimer = setTimeout(check, 200);
+  };
+  deviceTest.phaseTimer = setTimeout(check, 200);
+}
+function runDeviceSpeakerPhase(i) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    deviceTest.audioCtx = ctx;
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.frequency.value = 440; gain.gain.value = 0.08;
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.5);
+  } catch { /* autoplay blocked or unsupported - the phase still completes visually, exactly like the mock in the spec */ }
+  deviceTest.phaseTimer = setTimeout(() => { closeDeviceTestAudio(); finishDeviceTestPhase(i, true); }, 1400);
+}
+function runDeviceCameraPhase(i) {
+  deviceTest.phaseTimer = setTimeout(() => {
+    const track = lobbyStream && lobbyStream.getVideoTracks()[0];
+    finishDeviceTestPhase(i, !!(lobbyIsOn("#startCamBtn") && track && track.readyState === "live"));
+  }, 1200);
+}
+function finishDeviceTestPhase(i, passed) {
+  deviceTest.results[DEVICE_TEST_ROWS[i].key] = passed ? "pass" : "fail";
+  if (!passed) { deviceTest.phase = "failure"; deviceTest.current = -1; renderDeviceTestUi(); return; }
+  runDeviceTestPhase(i + 1);
+}
+function runDeviceTestPhase(i) {
+  if (i >= DEVICE_TEST_ROWS.length) { deviceTest.phase = "success"; deviceTest.current = -1; renderDeviceTestUi(); return; }
+  deviceTest.current = i;
+  renderDeviceTestUi();
+  const key = DEVICE_TEST_ROWS[i].key;
+  if (key === "mic") runDeviceMicPhase(i);
+  else if (key === "speaker") runDeviceSpeakerPhase(i);
+  else runDeviceCameraPhase(i);
+}
+function startDeviceTest() {
+  clearDeviceTestTimers();
+  deviceTest.phase = "running"; deviceTest.current = -1; deviceTest.results = {};
+  runDeviceTestPhase(0);
+}
+function stopDeviceTest() {
+  clearDeviceTestTimers();
+  deviceTest.phase = "idle"; deviceTest.current = -1; deviceTest.results = {};
+  resetMicTest(); // back to "Not tested" - this only resets the test STATUS, never the selected device
+  renderDeviceTestUi();
+}
+function toggleDeviceTest() { if (deviceTest.phase === "running") stopDeviceTest(); else startDeviceTest(); }
+function initDeviceTestPanel() {
+  on($("#startTestDevicesBtn"), "click", toggleDeviceTest);
+  on($("#startSpeakerTestBtn"), "click", toggleDeviceTest);
+}
+
 /* ---- mic / camera toggles ---- */
 function setLobbyMic(on) {
   const btn = $("#startMicBtn");
@@ -2908,11 +3162,7 @@ function initStartModal() {
     } else copy();
   });
 
-  on($("#startTestDevicesBtn"), "click", () => {
-    runMicTest();
-    toast("Testing your microphone, camera and speaker…");
-  });
-  on($("#startSpeakerTestBtn"), "click", () => runMicTest($("#startSpeakerTestBtn"), "Playing test sound…", "Sounds good ✓"));
+  initDeviceTestPanel(); // wires #startSpeakerTestBtn's click itself (it now drives the same shared mic->speaker->camera test as the header button)
 
   // Start Meeting: the meeting opens in a NEW browser tab (see "MEETING TAB" below); this tab keeps the Video Meetings page and the pre-join popup exactly as they are.
   let lastTabOpen = 0;
@@ -5678,8 +5928,22 @@ let deleteRecordingContext = null, recordingPreviewContext = null;
 const REC_PERM = { play: "recording.play", download: "recording.download", share: "recording.share", delete: "recording.delete", transcript: "transcript.view" };
 function initRecordingsInteractions() {
   on($("#recordingSearchInput"), "input", (e) => { state.recSearch = e.target.value; renderRecordings(); });
-  on($("#recFilterBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#recFilterPopover").classList.toggle("open"); });
-  on($("#recSortBtn"), "click", (e) => { e.stopPropagation(); closeAllPopovers(); $("#recSortPopover").classList.toggle("open"); });
+  on($("#recFilterBtn"), "click", (e) => {
+    e.stopPropagation();
+    const wasOpen = $("#recFilterPopover").classList.contains("open");
+    closeAllPopovers();
+    if (wasOpen) return;
+    $("#recFilterPopover").classList.add("open");
+    e.currentTarget.setAttribute("aria-expanded", "true");
+  });
+  on($("#recSortBtn"), "click", (e) => {
+    e.stopPropagation();
+    const wasOpen = $("#recSortPopover").classList.contains("open");
+    closeAllPopovers();
+    if (wasOpen) return;
+    $("#recSortPopover").classList.add("open");
+    e.currentTarget.setAttribute("aria-expanded", "true");
+  });
   on($("#recFilterApply"), "click", () => {
     state.recFilters.owner = $("#recFilterOwner").value;
     state.recFilters.size = $("#recFilterSize").value;
@@ -5957,6 +6221,7 @@ function init() {
   initNotifications();
   initCommandPalette();
 
+  enhanceAllSelects();
   $("#demoDataToggle").checked = state.demoData;
   switchSidebarView("upcoming");
   renderAllViews();
