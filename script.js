@@ -968,12 +968,18 @@ function positionContextMenu(recalcSide) {
   menu.style.top = top + "px";
   menu.style.left = left + "px";
 }
-// Scrolling (any scrollable ancestor - capture:true catches it without needing to know which one) closes the menu
-// outright rather than trying to follow the row, so it never lags behind or looks detached mid-scroll. A resize
-// leaves it open and just re-checks space above/below/left/right, since the anchor doesn't move because of that.
-// The brief grace window ignores a scroll that's an incidental side effect of the very click that opened the menu
-// (e.g. the browser auto-scrolling a partially-off-screen row into view) rather than a genuine user scroll after.
-document.addEventListener("scroll", () => { if (contextMenuAnchor && Date.now() - contextMenuOpenedAt > 150) closeContextMenu(); }, true);
+// Scrolling the PAGE/list behind the menu (any scrollable ancestor of the anchor - capture:true catches it without
+// needing to know which one) closes the menu outright rather than trying to follow the row. Scrolling INSIDE the
+// menu's own list (it's capped to ~5 rows and scrolls internally for the rest) must NOT count as that - it's the
+// menu's own content, not the page moving - so a scroll whose target is the menu itself is explicitly ignored.
+// The brief grace window on top of that ignores a scroll that's an incidental side effect of the very click that
+// opened the menu (e.g. the browser auto-scrolling a partially-off-screen row into view).
+document.addEventListener("scroll", (e) => {
+  if (!contextMenuAnchor) return;
+  const menu = $("#meetingActionMenu");
+  if (menu.contains(e.target)) return; // scrolling the menu's own list, not the page - leave it open
+  if (Date.now() - contextMenuOpenedAt > 150) closeContextMenu();
+}, true);
 window.addEventListener("resize", () => { if (contextMenuAnchor) positionContextMenu(true); });
 function closeContextMenu() {
   if (contextMenuAnchor) contextMenuAnchor.classList.remove("active");
