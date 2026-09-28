@@ -156,6 +156,17 @@ function enhanceSelect(select) {
 }
 function enhanceAllSelects() { $$("select").forEach(enhanceSelect); }
 
+// The Background thumbnails reuse the SAME scene art the real effect composites (fxDrawScene, section 13c further
+// down), just drawn small - so a thumbnail is an accurate small preview of what the background will actually look
+// like, not a separate, independently-designed swatch color. Applied once at init; there's nothing to keep in sync
+// afterward since the scene art itself never changes at runtime.
+function initBgThumbPreviews() {
+  ["office", "home", "classroom", "beach"].forEach((kind) => {
+    const url = fxDrawScene(kind, 160, 120).toDataURL("image/png");
+    $$(`.swatch-${kind}`).forEach((el) => { el.style.backgroundImage = `url(${url})`; el.style.backgroundSize = "cover"; el.style.backgroundPosition = "center"; });
+  });
+}
+
 const TODAY = new Date(2026, 8, 23); // 2026-09-23
 const TODAY_ISO = "2026-09-23";
 
@@ -2707,7 +2718,14 @@ function fxSyncUi() {
     }
   });
   const stage = $("#startCameraPreview");
-  if (stage) { stage.dataset.bg = s.background === "custom" ? "none" : s.background; stage.classList.toggle("mirrored", s.mirror); }
+  // the flat-gradient "impression" behind the avatar (.lobby-bg-layer, keyed off data-bg) must only ever stand in for
+  // the real composited background while the camera is actually on - with the camera off this must read as "none",
+  // otherwise a colour hint of the selected background leaks through behind the avatar when nothing should show at all.
+  if (stage) {
+    const camOn = lobbyIsOn("#startCamBtn");
+    stage.dataset.bg = (camOn && s.background !== "custom") ? s.background : "none";
+    stage.classList.toggle("mirrored", s.mirror);
+  }
   const hdBadge = $("#cameraHdBadge");
   if (hdBadge) hdBadge.classList.toggle("d-none", !(fxCameraInfo.height >= 720) || !lobbyStream);
 }
@@ -2803,7 +2821,7 @@ function initVideoFxUi() {
     on(lobbyFxToggle, "show.bs.dropdown", fitLobbyFxPanel);
     on(window, "resize", () => { if ($("#lobbyFxPanel").classList.contains("show")) fitLobbyFxPanel(); });
   }
-  videoFx.subscribe(() => { fxSyncUi(); fxPushToLive(); });
+  videoFx.subscribe(() => { fxSyncUi(); fxPushToLive(); updateLobbyCamBadge(); });
   fxAudio.subscribe((state, level) => { micTestFeed(state, level); fxSyncMeter(state, level); if (fxAudio._last !== state) { fxAudio._last = state; fxSyncUi(); } });
   fxSyncUi();
 }
@@ -3055,14 +3073,25 @@ function setLobbyMic(on) {
   if (on && !$("#startModalOverlay").hidden) fxAudio.start(fxMicDeviceId("lobby")); else fxAudio.stop();
   fxSyncUi();
 }
+// background label shown in the preview badge - "none" shows nothing extra, everything else names itself
+const FX_BG_LABELS = { blur: "Background Blur", office: "Office Background", home: "Home Background", classroom: "Classroom Background", beach: "Beach Background", custom: "Custom Background" };
+function updateLobbyCamBadge() {
+  const badge = $("#startPreviewCamStatusBadge");
+  if (!badge) return;
+  const on = lobbyIsOn("#startCamBtn");
+  const bgLabel = on ? FX_BG_LABELS[videoFx.st.background] : "";
+  badge.innerHTML = `<span class="status-dot-sm ${on ? "good" : ""}"></span> Camera is ${on ? "on" : "off"}`
+    + (bgLabel ? `<span class="lobby-badge-sep"></span><i class="bi bi-image"></i> ${bgLabel}` : "");
+}
 function setLobbyCam(on) {
   const btn = $("#startCamBtn");
   btn.classList.toggle("active", on);
   btn.setAttribute("aria-pressed", String(on));
-  $("#startCamLabel").textContent = on ? "Camera" : "Camera off";
-  $("#startPreviewCamStatusBadge").innerHTML = `<span class="status-dot-sm ${on ? "good" : ""}"></span> Camera is ${on ? "on" : "off"}`;
+  $("#startCamLabel").textContent = on ? "Camera" : "Start Video";
+  updateLobbyCamBadge();
   $("#cameraHdBadge").classList.toggle("d-none", !on);
   if (on) startLobbyCamera(); else stopLobbyCamera("Camera is off");
+  fxSyncUi(); // the avatar-side background hint (data-bg) depends on camera on/off too, not just the selected background
 }
 
 /* ---- meeting security (UI only: a prototype control, like the Schedule modal's own password switch - there is no join-time password check to wire it to) ---- */
@@ -6222,6 +6251,7 @@ function init() {
   initCommandPalette();
 
   enhanceAllSelects();
+  initBgThumbPreviews();
   $("#demoDataToggle").checked = state.demoData;
   switchSidebarView("upcoming");
   renderAllViews();
