@@ -316,6 +316,7 @@ function baseMeeting(overrides) {
     hostId: ME.id,
     participants: [],
     guests: [],
+    invitations: {},                                            // per-invitee status ledger: { [userId]: { status, invitedBy, invitedAt, respondedAt } }
     meetingType: "Video",
     recurring: "Does not repeat",
     reminder: "10",
@@ -339,7 +340,7 @@ const demoMeeting = (o) => baseMeeting(Object.assign({ isDemo: true, status: "Up
 
 function buildDemoUpcoming() {
   return [
-    demoMeeting({ title: "Product Discussion", description: "Review Q4 roadmap and prioritize upcoming features.", date: "2026-09-24", startTime: "10:30", duration: 45, hostId: "u1", participants: ["u2"], guests: [{ email: "client.review@example.com" }, { email: "partner.ops@example.com" }], team: "", locationId: "mumbai", security: { permScreen: false } }),
+    demoMeeting({ title: "Product Discussion", description: "Review Q4 roadmap and prioritize upcoming features.", date: "2026-09-24", startTime: "10:30", duration: 45, hostId: "u1", participants: ["u2"], guests: [{ email: "client.review@example.com" }, { email: "partner.ops@example.com" }], team: "", locationId: "mumbai", security: { permScreen: false, password: true, passwordValue: "X7kP-92Lm" } }),
     demoMeeting({ title: "Client Demo", description: "Product demo for a prospective client.", date: "2026-09-26", startTime: "16:00", duration: 30, hostId: "u1", participants: ["u2"], guests: [{ email: "buyer@brightpath.io" }], team: "", locationId: "mumbai", security: { permScreen: false } }),
     demoMeeting({ title: "Manager 1 - Team Meeting", description: "Weekly Team 1 sync.", date: "2026-09-24", startTime: "15:00", duration: 30, hostId: "u3", participants: ["u5", "u6"], assignedTo: ["u5", "u6"], recurring: "Weekly", status: "Starting Soon", team: "team1" }),
     demoMeeting({ title: "Agent 1 - Client Call", description: "Walkthrough of onboarding steps for a new client.", date: "2026-09-25", startTime: "09:00", duration: 45, hostId: "u3", participants: ["u5"], assignedTo: ["u5"], guests: [{ email: "newclient@brightpath.io" }], meetingType: "Audio + Video", team: "team1" }),
@@ -375,16 +376,39 @@ function buildDemoHistory() { // past meetings + their recordings (a recording b
     team: m.team, locationId: m.locationId, transcriptAvailable: m.transcriptAvailable, isDemo: true }));
   return { meetings, recordings };
 }
-// what the signed-in user's bell shows: built only from the meetings and recordings that user may see, never from anybody else's
+function timeAgo(ts) {
+  const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+// what the signed-in user's bell shows: built only from the meetings and recordings that user may see, never from anybody else's.
+// Real invitation events (state.notifications, added by sendInvitation/acceptInvite/declineInvite/cancelInvitation) come first, newest first;
+// the "invited" computed item below is suppressed once a real one exists for that meeting, so the same invite is never announced twice.
 function notificationsForUser() {
   const n = [];
+  const mine = state.notifications.filter((x) => x.userId === ME.id).sort((a, b) => b.createdAt - a.createdAt);
+  const realInviteMeetingIds = new Set(mine.filter((x) => x.type === "invite").map((x) => x.meetingId));
+  mine.forEach((x) => {
+    const found = x.meetingId ? findMeeting(x.meetingId) : null;
+    const meeting = found && found.meeting;
+    const stillPending = x.type === "invite" && meeting && meeting.invitations && meeting.invitations[ME.id] && meeting.invitations[ME.id].status === "pending";
+    n.push({ icon: x.icon || "invite", title: x.title, text: x.text, time: timeAgo(x.createdAt), meetingId: stillPending ? x.meetingId : null });
+  });
   const up = visibleMeetings("upcoming").slice().sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))[0];
   const inv = visibleMeetings("invited")[0];
   const rec = visibleRecordings().slice().sort((a, b) => b.recordedOn.localeCompare(a.recordedOn))[0];
   if (up) n.push({ icon: "clock", title: "Meeting starts soon", text: `${up.title} is your next meeting.`, time: "2m ago" });
-  if (inv) n.push({ icon: "invite", title: `${(userById(inv.hostId) || {}).name || "Someone"} invited you to a meeting`, text: `You've been invited to “${inv.title}”.`, time: "1h ago" });
+  if (inv && !realInviteMeetingIds.has(inv.id)) n.push({ icon: "invite", title: `${(userById(inv.hostId) || {}).name || "Someone"} invited you to a meeting`, text: `You've been invited to “${inv.title}”.`, time: "1h ago" });
   if (rec) n.push({ icon: "recording", title: "Recording is ready", text: `${rec.name} recording is now available.`, time: "1d ago" });
   return n;
+}
+function addNotification(userId, notif) {
+  state.notifications.unshift(Object.assign({ id: uid("notif"), userId, createdAt: Date.now() }, notif));
+  if (state.notifications.length > 300) state.notifications.length = 300; // keep it bounded
+  saveState();
+  if (userId === ME.id) renderNotifications();
 }
 
 /* ============================================================
@@ -420,6 +444,8 @@ let state = {
   scheduleMode: "create", // create | edit | duplicate
   scheduleForm: { participants: [], guests: [] },
   inviteForm: { participants: [], guests: [], targetMeetingId: null },
+  startInvite: { participants: [], guests: [] }, // pre-meeting "Invite Participants" queue: no real meeting/ID exists yet, so nothing is actually sent until Start Meeting creates one
+  notifications: [], // real per-user invitation lifecycle events (sent/accepted/declined/cancelled) - separate from the always-computed "up next" / "recording ready" items
   prejoinContext: null,
   lobbyPrefs: { remember: false, mic: true, cam: true, noiseSuppression: true, touchUp: false, mirror: true, autoLight: true },
 };
@@ -432,6 +458,7 @@ function saveState() {
       recordings: state.recordings,
       demoData: state.demoData,
       lobbyPrefs: state.lobbyPrefs,
+      notifications: state.notifications,
       rbac: RBAC_SCHEMA,
     }));
   } catch (e) { /* ignore quota / privacy errors */ }
@@ -459,6 +486,7 @@ function loadState() {
   try { const raw = localStorage.getItem(STORAGE_KEY); parsed = raw ? JSON.parse(raw) : null; } catch (e) { parsed = null; /* corrupt storage */ }
   if (parsed && typeof parsed.demoData === "boolean") state.demoData = parsed.demoData;
   if (parsed && parsed.lobbyPrefs && typeof parsed.lobbyPrefs === "object") Object.assign(state.lobbyPrefs, parsed.lobbyPrefs);
+  state.notifications = (parsed && Array.isArray(parsed.notifications)) ? parsed.notifications : [];
   if (parsed && parsed.rbac === RBAC_SCHEMA && parsed.meetings) {
     state.meetings = parsed.meetings;
     state.recordings = parsed.recordings || [];
@@ -592,9 +620,18 @@ function authorize(perm, subject) {
 }
 // what the signed-in user gets to see: EVERY list, count, picker, search and export starts from these (filter first, render after)
 const answered = (m, key) => (m[key] || []).includes(ME.id);
+// a real (Invite Participants) invitation that THIS user hasn't accepted yet - whatever physical list the meeting lives in, it must not
+// act like an accepted meeting for them (not shown as Upcoming/Ongoing) until they respond; the host is never subject to their own invite
+const hasUnacceptedInvite = (m) => m.hostId !== ME.id && !!(m.invitations && m.invitations[ME.id] && m.invitations[ME.id].status !== "accepted");
 function visibleMeetings(listKey) {
   let list = state.meetings[listKey];
-  if (listKey === "invited") list = list.filter((m) => !answered(m, "acceptedBy") && !answered(m, "declinedBy"));                       // still waiting for THIS user's answer
+  if (listKey === "invited") {
+    list = list.filter((m) => !answered(m, "acceptedBy") && !answered(m, "declinedBy"));                       // still waiting for THIS user's answer
+    // a real pending invitation for a meeting stored in upcoming/ongoing (created via Schedule Meeting, not the legacy demo "invited" bucket) belongs here too
+    list = list.concat(["upcoming", "ongoing"].flatMap((k) => state.meetings[k].filter((m) => m.invitations && m.invitations[ME.id] && m.invitations[ME.id].status === "pending")));
+  } else {
+    list = list.filter((m) => !hasUnacceptedInvite(m));
+  }
   if (listKey === "upcoming") list = list.concat(state.meetings.invited.filter((m) => answered(m, "acceptedBy") && !answered(m, "declinedBy"))); // accepted by this user
   return list.filter((m) => can("meeting.view", m));
 }
@@ -609,7 +646,6 @@ function ownershipForNewMeeting(hostId) {
   if (ME.role === "location_admin") return { team: host.teamId || "", locationId: ME.locationId };
   return { team: host.teamId || "", locationId: host.locationId || "mumbai" };
 }
-const defaultInstantParticipants = () => visibleUsers().filter((u) => u.id !== ME.id).slice(0, 5).map((u) => u.id);
 // an object literal evaluates every value up front, so this stays an if/else rather than a role-keyed map: a Manager's branch must not run LOCATIONS[ME.locationId] for an Admin (locationId is null for that role), and vice-versa
 function currentScopeLabel() {
   if (ME.role === "admin") return "All locations";
@@ -1675,7 +1711,7 @@ function initCardActionDelegation() {
     if (!found) return;
     const { meeting } = found;
 
-    if (action === "join") openPrejoinFor(meeting);
+    if (action === "join") requestJoin(meeting);
     else if (action === "view") openDetailsDrawer(meeting);
     else if (action === "accept") acceptInvite(meeting);
     else if (action === "decline") declineInvite(meeting);
@@ -1688,9 +1724,23 @@ function initCardActionDelegation() {
   });
 }
 
+// updates this one person's entry in the meeting's invitation ledger and lets whoever invited them know how they answered
+function setInvitationStatus(meeting, userId, status) {
+  meeting.invitations = meeting.invitations || {};
+  const prior = meeting.invitations[userId];
+  meeting.invitations[userId] = Object.assign({ invitedBy: meeting.hostId, invitedAt: Date.now() }, prior, { status, respondedAt: Date.now() });
+  const inviterId = meeting.invitations[userId].invitedBy;
+  if (inviterId && inviterId !== userId && (status === "accepted" || status === "declined")) {
+    addNotification(inviterId, {
+      type: status === "accepted" ? "invitation_accepted" : "invitation_declined", icon: "invite",
+      meetingId: meeting.id, title: `${userById(userId)?.name || "Someone"} ${status} your invitation`, text: meeting.title,
+    });
+  }
+}
 function acceptInvite(meeting) {
   if (!authorize("meeting.view", meeting)) return;
   (meeting.acceptedBy = meeting.acceptedBy || []).push(ME.id); // per person: everybody else invited keeps their own invitation
+  setInvitationStatus(meeting, ME.id, "accepted");
   saveState();
   renderAllViews();
   toast("Meeting invitation accepted.");
@@ -1698,6 +1748,7 @@ function acceptInvite(meeting) {
 function declineInvite(meeting) {
   if (!authorize("meeting.view", meeting)) return;
   (meeting.declinedBy = meeting.declinedBy || []).push(ME.id);
+  setInvitationStatus(meeting, ME.id, "declined");
   saveState();
   renderAllViews();
   toast("Meeting invitation declined.");
@@ -1812,7 +1863,7 @@ function handleMenuAction(action, meeting, listKey) {
   if (!authorize(MENU_PERM[action], meeting)) return;
   switch (action) {
     case "view": case "info": openDetailsDrawer(meeting, "overview"); break;
-    case "join": openPrejoinFor(meeting); break;
+    case "join": requestJoin(meeting); break;
     case "edit": openScheduleModal("edit", meeting); break;
     case "reschedule": openRescheduleModal(meeting); break;
     case "copy": copyMeetingLink(meeting); break;
@@ -2224,6 +2275,7 @@ function initScheduleModal() {
       if (!can("meeting.settings")) delete data.security;
       const newMeeting = baseMeeting(Object.assign(data, { status: "Upcoming" }, ownershipForNewMeeting(hostId)));
       state.meetings.upcoming.push(newMeeting);
+      newMeeting.participants.filter((id) => id !== newMeeting.hostId).forEach((id) => createInvitation(newMeeting, id)); // participants picked at creation time are real invitations too
       toast("Meeting scheduled successfully.");
     }
     saveState();
@@ -2239,14 +2291,110 @@ function duplicateMeeting(meeting) {
 
 /* ============================================================
    13. JOIN MEETING MODAL + PRE-JOIN
+   The password gate is centralised in requestJoin(): every way to join a meeting (typing an ID/link here, a meeting card's
+   Join button, the ⋮ menu, the details drawer) calls it, so a password-protected meeting always asks - not just the ID flow.
+   The host of a meeting is never asked for their own password.
    ============================================================ */
+let joinMatched = null, joinBusy = false, joinCameFromIdStep = false;
+
+function renderJoinStep(step) {
+  const toPw = step === "password";
+  const showBack = toPw && joinCameFromIdStep;
+  $("#joinModalTitle").textContent = toPw ? "Enter Meeting Password" : "Join Meeting";
+  $("#joinCancelBtn").hidden = showBack;
+  $("#joinBackBtn").hidden = !showBack;
+  $("#joinStepId").hidden = toPw;
+  $("#joinStepPassword").hidden = !toPw;
+}
+function setJoinBusy(busy) {
+  joinBusy = busy;
+  const btn = $("#joinMeetingSubmitBtn");
+  btn.disabled = busy;
+  btn.innerHTML = busy ? '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Joining…' : "Join Meeting";
+  $("#joinBackBtn").disabled = busy;
+}
+function goToJoinStep(step, dir) {
+  renderJoinStep(step);
+  setJoinBusy(false);
+  const el = step === "password" ? $("#joinStepPassword") : $("#joinStepId");
+  el.classList.remove("join-anim-fwd", "join-anim-back");
+  void el.offsetWidth; // restart the animation even if this step was shown before
+  el.classList.add(dir === "back" ? "join-anim-back" : "join-anim-fwd");
+  if (step === "password") setTimeout(() => $("#joinPasswordInput").focus(), 160);
+}
+function resetJoinPasswordField() {
+  $("#joinPasswordInput").value = "";
+  $("#joinPasswordInput").type = "password";
+  $("#joinPasswordVisBtn").innerHTML = '<i class="bi bi-eye"></i>';
+  $("#joinPasswordVisBtn").title = $("#joinPasswordVisBtn").ariaLabel = "Show password";
+  $("#err-joinPasswordInput").textContent = "";
+}
+function joinMeetingNow(meeting, adhoc) {
+  closeModal("joinModalOverlay");
+  openPrejoinFor(meeting, !!adhoc);
+}
+// the password belongs to the MEETING, not to any one person's invitation - anyone RBAC-eligible to join is asked for it alike
+function meetingNeedsPasswordFrom(meeting) {
+  return !!(meeting.security && meeting.security.password && meeting.security.passwordValue && meeting.hostId !== ME.id);
+}
+// the ONE gate every "join this meeting" action goes through, whichever button started it
+function requestJoin(meeting, adhoc) {
+  if (meeting.status === "Ended") { toast("This meeting has ended.", "error"); return; }
+  if (!authorize("meeting.join", meeting)) return;
+  if (!meetingNeedsPasswordFrom(meeting)) { joinMeetingNow(meeting, adhoc); return; }
+  joinMatched = meeting;
+  joinCameFromIdStep = false;
+  resetJoinPasswordField();
+  renderJoinStep("password");
+  setJoinBusy(false);
+  openModal("joinModalOverlay");
+  setTimeout(() => $("#joinPasswordInput").focus(), 160);
+}
+function submitJoinPassword() {
+  if (joinBusy || !joinMatched) return;
+  const input = $("#joinPasswordInput"), errEl = $("#err-joinPasswordInput");
+  const val = input.value;
+  if (!val.trim()) { errEl.textContent = "Please enter the meeting password."; input.focus(); return; }
+  setJoinBusy(true);
+  setTimeout(() => {
+    if (val !== joinMatched.security.passwordValue) {
+      setJoinBusy(false);
+      errEl.textContent = "Incorrect password. Please try again.";
+      input.focus();
+      return;
+    }
+    errEl.textContent = "";
+    joinMeetingNow(joinMatched);
+  }, 650);
+}
+
 function initJoinModal() {
   on($("#btnJoinMeeting"), "click", () => {
+    joinMatched = null;
+    joinCameFromIdStep = false;
     $("#joinMeetingInput").value = "";
     $("#err-joinMeetingInput").textContent = "";
+    resetJoinPasswordField();
+    renderJoinStep("id");
+    setJoinBusy(false);
     openModal("joinModalOverlay");
   });
-  on($("#joinMeetingSubmitBtn"), "click", () => {
+
+  on($("#joinPasswordVisBtn"), "click", () => {
+    const input = $("#joinPasswordInput"), btn = $("#joinPasswordVisBtn");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.innerHTML = show ? '<i class="bi bi-eye-slash"></i>' : '<i class="bi bi-eye"></i>';
+    btn.title = btn.ariaLabel = show ? "Hide password" : "Show password";
+  });
+
+  on($("#joinBackBtn"), "click", () => {
+    if (joinBusy) return;
+    $("#err-joinPasswordInput").textContent = "";
+    goToJoinStep("id", "back");
+  });
+
+  function submitJoinId() {
     const val = $("#joinMeetingInput").value.trim();
     const errEl = $("#err-joinMeetingInput");
     if (!val) { errEl.textContent = "Please enter a meeting ID or link."; return; }
@@ -2259,12 +2407,29 @@ function initJoinModal() {
     errEl.textContent = "";
     const allMeetings = [...state.meetings.upcoming, ...state.meetings.ongoing, ...state.meetings.invited].filter((m) => can("meeting.join", m));
     const matched = allMeetings.find((m) => m.meetingCode === val || m.link.includes(val.split("/").pop()));
+    if (!matched) {
+      const ended = state.meetings.past.find((m) => (m.meetingCode === val || m.link.includes(val.split("/").pop())) && can("meeting.view", m));
+      if (ended) { errEl.textContent = "This meeting has ended."; return; }
+    }
     if (!matched && !can("meeting.create")) { errEl.textContent = "No meeting with that ID or link is available to you."; return; } // same answer whether it does not exist or is not yours
     if (!matched && !authorize("meeting.create")) return; // an unknown ID would start a new meeting
-    closeModal("joinModalOverlay");
-    if (matched) openPrejoinFor(matched);
-    else openPrejoinFor(baseMeeting({ title: "Instant Meeting", hostId: ME.id, date: TODAY_ISO, startTime: new Date().toTimeString().slice(0, 5), status: "Upcoming", meetingCode: val, ...ownershipForNewMeeting(ME.id) }), true);
+    if (matched && meetingNeedsPasswordFrom(matched)) {
+      joinMatched = matched;
+      joinCameFromIdStep = true;
+      goToJoinStep("password");
+      return;
+    }
+    if (matched) joinMeetingNow(matched);
+    else joinMeetingNow(baseMeeting({ title: "Instant Meeting", hostId: ME.id, date: TODAY_ISO, startTime: new Date().toTimeString().slice(0, 5), status: "Upcoming", meetingCode: val, ...ownershipForNewMeeting(ME.id) }), true);
+  }
+
+  on($("#joinMeetingSubmitBtn"), "click", () => {
+    if (joinBusy) return;
+    if ($("#joinStepPassword").hidden) submitJoinId();
+    else submitJoinPassword();
   });
+  on($("#joinMeetingInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitJoinId(); } });
+  on($("#joinPasswordInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitJoinPassword(); } });
 }
 
 function copyTextToClipboard(text) {
@@ -3252,6 +3417,7 @@ function initStartModal() {
     if (!authorize("meeting.create")) return;
     $("#instantMeetingName").value = `${ME.name.split(" ")[0]}'s Meeting`;
     startModalDraft = { meetingCode: genMeetingId(), link: genMeetingLink() };
+    state.startInvite = { participants: [], guests: [] }; // a fresh lobby session starts with no queued invitations
     $("#startMeetingIdText").textContent = startModalDraft.meetingCode;
 
     const remembered = state.lobbyPrefs.remember;
@@ -3329,9 +3495,20 @@ function initStartModal() {
       bg: videoFx.st.background, mirror: videoFx.st.mirror, touchUp: videoFx.st.appearance !== "off",
       light: videoFx.st.autoLighting, noise: videoFx.st.noiseSuppression, useStored: true,
     };
+    // The password never travels in the URL (a new tab's address bar/history is not the place for it): a short-lived localStorage
+    // handoff, read once by instantMeeting() in the new tab and immediately deleted.
+    const pwKey = "mcm-instant-pw-" + cfg.code;
+    try { localStorage.setItem(pwKey, JSON.stringify({ password: $("#lobbyPasswordToggle").checked, passwordValue: $("#lobbyPasswordInput").value })); } catch (e) { /* storage blocked */ }
+    // Same handoff, for the queued Invite Participants selection: nothing was actually sent while only the lobby existed, this is
+    // what instantMeeting() in the new tab reads once the meeting has a real ID, to finally create/send the real invitations.
+    const invKey = "mcm-instant-invite-" + cfg.code;
+    const hasQueuedInvites = state.startInvite.participants.length || state.startInvite.guests.length;
+    if (hasQueuedInvites) { try { localStorage.setItem(invKey, JSON.stringify(state.startInvite)); } catch (e) { /* storage blocked */ } }
     // Straight from the click, nothing asynchronous before it: that is what keeps browsers from treating the new tab as a blocked pop-up.
     const tab = window.open(meetingTabUrl(cfg), "_blank");
     if (!tab || tab.closed || typeof tab.closed === "undefined") {
+      try { localStorage.removeItem(pwKey); } catch (e) { /* ignore */ }
+      if (hasQueuedInvites) try { localStorage.removeItem(invKey); } catch (e) { /* ignore */ }
       toast("Your browser blocked the new tab. Allow pop-ups for this page, then click Start Meeting again.", "error");
       return;
     }
@@ -3389,11 +3566,40 @@ function readMeetingRoute() {
 }
 
 function instantMeeting(name, code, link) {
-  return baseMeeting({
+  const pwKey = "mcm-instant-pw-" + code;
+  let security;
+  try {
+    const raw = localStorage.getItem(pwKey);
+    if (raw) {
+      const p = JSON.parse(raw);
+      security = { password: !!p.password, passwordValue: p.password ? p.passwordValue : "" };
+      localStorage.removeItem(pwKey);
+    }
+  } catch (e) { /* storage blocked / corrupt - falls back to no password, same as before this fix */ }
+  const meeting = baseMeeting({
     title: name, hostId: ME.id, date: TODAY_ISO,
     startTime: new Date().toTimeString().slice(0, 5), duration: 30, status: "Live",
-    participants: defaultInstantParticipants(), meetingCode: code, link, ...ownershipForNewMeeting(ME.id),
+    participants: [], meetingCode: code, link, security, ...ownershipForNewMeeting(ME.id), // real: nobody has access until actually invited
   });
+  // Activate whatever was queued in the pre-meeting "Invite Participants" modal, now that a real meeting/ID finally exists.
+  const invKey = "mcm-instant-invite-" + code;
+  try {
+    const raw = localStorage.getItem(invKey);
+    if (raw) {
+      const queued = JSON.parse(raw);
+      localStorage.removeItem(invKey);
+      let sent = 0, failed = 0;
+      (queued.participants || []).filter((id) => id !== meeting.hostId).forEach((id) => {
+        try {
+          if (!meeting.participants.includes(id)) meeting.participants.push(id);
+          if (createInvitation(meeting, id)) sent++;
+        } catch (e) { failed++; }
+      });
+      (queued.guests || []).forEach((email) => { if (!meeting.guests.some((g) => g.email === email)) meeting.guests.push({ email }); });
+      if (sent || failed) toast(`Meeting started. ${sent} invitation${sent === 1 ? "" : "s"} sent${failed ? `, ${failed} failed` : ""}.`);
+    }
+  } catch (e) { /* storage blocked / corrupt - the meeting still starts, just without the queued invites */ }
+  return meeting;
 }
 function findMeetingByCode(code) {
   for (const key of ["ongoing", "upcoming", "invited", "past"]) {
@@ -3438,7 +3644,7 @@ const live = {
   view: "speaker", pinnedId: null, speakerId: null, panel: null, hostId: null,
   hand: false, hideSelf: false, recState: "idle", recSecs: 0, quality: "auto", speaking: new Set(), autoPip: false, pipHint: false, pipOpening: false, pipClosing: false,
   sharing: false, shareStream: null, shareAudio: false,
-  locked: false, onlyHostShare: false, perms: { unmute: true, chat: true, react: true }, blocked: [], joined: [],
+  locked: false, onlyHostShare: false, perms: { unmute: true, chat: true, react: true }, blocked: [], joined: [], realMode: false, endedClosing: false,
   bg: "none", fx: { touchUp: false, light: true, mirror: true, noise: true },
   stream: null, streamFailed: false, camToken: 0, camId: "", spkId: "", micAsked: false, devices: { mic: "", cam: "", spk: "" }, deviceList: { mic: [], cam: [] },
   peers: {}, chat: [], qa: [], qaFilter: "all", qaAnswering: null, chatTo: "all", dialog: null, dialogReturn: null, confirmOk: null,
@@ -3465,6 +3671,8 @@ const liveMenu = (el) => bootstrap.Dropdown.getOrCreateInstance(el);
 function livePeople() {
   const m = state.liveMeeting;
   if (!m) return [ME];
+  // Real mode: only people who actually opened this meeting (this tab + whoever else's presence has arrived) - never the whole invite list up front.
+  if (live.realMode) return [...new Set([ME.id, ...live.joined])].map(userById).filter(Boolean);
   return [...new Set([ME.id, m.hostId, ...m.participants, ...live.joined])].map(userById).filter(Boolean);
 }
 const liveTileUsers = () => livePeople().filter((u) => !(live.hideSelf && u.id === ME.id));
@@ -3473,6 +3681,95 @@ function livePeerState(u) {
   return live.peers[u.id] || { muted: false, camOff: false, hand: false };
 }
 function seedLivePeer(u, i) { live.peers[u.id] = { muted: i % 3 === 1, camOff: i % 4 === 3, hand: i === 2 }; }
+
+/* ---- real-user presence (Demo Data OFF): other browser tabs of THIS SAME machine, each signed in as a different demo user via the role
+   switcher, announce themselves through one shared localStorage key. There is no backend/websocket here, so this only works across tabs/windows
+   of the same browser - it is real (not faked) join/leave + mic/cam sync, just scoped to one machine, per this prototype's constraints. */
+const LIVE_PRESENCE_KEY = "mcm-live-presence-v1";
+const LIVE_PRESENCE_STALE_MS = 12000, LIVE_PRESENCE_HEARTBEAT_MS = 4000;
+let livePresenceTimer = null;
+function readLivePresenceAll() {
+  try { return JSON.parse(localStorage.getItem(LIVE_PRESENCE_KEY) || "{}"); } catch (e) { return {}; }
+}
+function writeLivePresenceAll(all) {
+  try { localStorage.setItem(LIVE_PRESENCE_KEY, JSON.stringify(all)); } catch (e) { /* storage blocked / full */ }
+}
+function publishLivePresence() {
+  if (!live.realMode || !state.liveMeeting) return;
+  const all = readLivePresenceAll(), mid = state.liveMeeting.id;
+  all[mid] = all[mid] || {};
+  all[mid][ME.id] = { muted: !liveMicOn(), camOff: !liveCamOn(), hand: live.hand, ts: Date.now() };
+  writeLivePresenceAll(all);
+}
+function clearLivePresenceSelf(meeting) {
+  const mid = meeting && meeting.id;
+  if (!mid) return;
+  const all = readLivePresenceAll();
+  if (!all[mid]) return;
+  delete all[mid][ME.id];
+  if (!Object.keys(all[mid]).length) delete all[mid];
+  writeLivePresenceAll(all);
+}
+// merges every OTHER tab's fresh presence for the current meeting into live.joined / live.peers, then redraws
+function applyLivePresence() {
+  if (!live.realMode || !state.liveMeeting) return;
+  const mine = readLivePresenceAll()[state.liveMeeting.id] || {};
+  const now = Date.now();
+  const freshIds = Object.keys(mine).filter((id) => id !== ME.id && now - mine[id].ts < LIVE_PRESENCE_STALE_MS);
+  live.joined = freshIds;
+  freshIds.forEach((id) => { live.peers[id] = { muted: !!mine[id].muted, camOff: !!mine[id].camOff, hand: !!mine[id].hand }; });
+  Object.keys(live.peers).forEach((id) => { if (id !== ME.id && !freshIds.includes(id)) delete live.peers[id]; });
+  renderLiveStage();
+  if (live.panel === "participants") renderLivePanel();
+}
+function startLivePresenceSync() {
+  stopLivePresenceSync();
+  if (!live.realMode) return;
+  publishLivePresence();
+  applyLivePresence();
+  livePresenceTimer = setInterval(() => { publishLivePresence(); applyLivePresence(); }, LIVE_PRESENCE_HEARTBEAT_MS);
+}
+function stopLivePresenceSync() {
+  if (livePresenceTimer) { clearInterval(livePresenceTimer); livePresenceTimer = null; }
+}
+function initLivePresenceSync() {
+  window.addEventListener("storage", (e) => { if (e.key === LIVE_PRESENCE_KEY) applyLivePresence(); });
+  window.addEventListener("beforeunload", () => { if (live.realMode && state.liveMeeting) clearLivePresenceSelf(state.liveMeeting); });
+}
+
+/* ---- Demo Data / Real Users pill in the live room header ---- */
+function liveDataModeInfo(real) {
+  return real
+    ? { icon: "bi-people-fill", label: "Real Users", badge: "OFF", tip: "Using real users and live meeting data" }
+    : { icon: "bi-flask", label: "Demo Data", badge: "ON", tip: "Using simulated participants and meeting activity" };
+}
+function syncLiveDataModeUi() {
+  const btn = $("#liveDataModeBtn");
+  if (!btn) return;
+  const info = liveDataModeInfo(live.realMode);
+  btn.querySelector(".bi").className = `bi ${info.icon}`;
+  $("#liveDataModeLabel").textContent = info.label;
+  $("#liveDataModeBadge").textContent = info.badge;
+  btn.title = info.tip;
+  btn.classList.toggle("live-pill-real", live.realMode);
+}
+function setLiveDataMode(real) {
+  live.realMode = !!real;
+  live.peers = {};
+  live.joined = [];
+  if (live.realMode) {
+    startLivePresenceSync();
+  } else {
+    stopLivePresenceSync();
+    clearLivePresenceSelf(state.liveMeeting);
+    livePeople().forEach((u, i) => { if (u.id !== ME.id) seedLivePeer(u, i); });
+    speakerSim.id = null; speakerSim.nextAt = performance.now() + 1500;
+  }
+  syncLiveDataModeUi();
+  renderLiveStage();
+  if (live.panel === "participants") renderLivePanel();
+  toast(live.realMode ? "Switched to real users." : "Switched to demo data.");
+}
 function liveMainId() {
   const ids = liveTileUsers().map((u) => u.id);
   if (live.pinnedId && ids.includes(live.pinnedId)) return live.pinnedId;
@@ -3685,6 +3982,7 @@ const speakingSince = {}; // last time each person was above the threshold (a sh
 function liveSpeakerLevels(now) {
   const levels = {};
   levels[ME.id] = liveMicOn() && fxAudio.state === "on" ? fxAudio.level : 0;
+  if (live.realMode) return levels; // no fabricated "who's speaking" for real users - this prototype has no real audio signal from other tabs
   const run = aiNotes.run;
   if (run.on && run.started && !run.done) { // a running Notes & Coach demo decides who is speaking (the room's random turns wait)
     liveTileUsers().forEach((u) => { if (u.id !== ME.id) levels[u.id] = run.playing && u.id === run.speakerId ? 0.6 : 0; });
@@ -3934,6 +4232,7 @@ function setLiveHand(on) {
   toast(on ? "You raised your hand." : "You lowered your hand.", "success", "hand");
   refreshLiveTiles();
   if (live.panel === "participants") renderLivePanel();
+  publishLivePresence();
 }
 // another participant's hand: their tile updates in place and everyone gets one small notice when it goes UP (never for the same state twice)
 function setPeerHand(uid, on) {
@@ -4160,14 +4459,53 @@ function armCaptionTimer() { // a finished caption stays for a few seconds; it i
   clearTimeout(speech.capTimer);
   speech.capTimer = setTimeout(() => { speech.lines = []; speech.interim = ""; renderCaption(); }, 6000);
 }
+/* ---- real-time multi-user transcript (Demo Data OFF / live.realMode): other browser tabs of THIS SAME machine, each a different
+   real demo user in the same meeting, share their own microphone's FINAL transcript segments through one shared localStorage key -
+   the same honest, same-browser-scoped mechanism already used for live presence (LIVE_PRESENCE_KEY). There is no backend here, so
+   this cannot capture another tab's actual remote audio - it relays each tab's own local speech-recognition result to the others,
+   which is the maximum real (non-simulated) behaviour achievable without a server. Interim text never leaves its own tab; only
+   finalized segments are shared, exactly once each. */
+const LIVE_TRANSCRIPT_KEY = "mcm-live-transcript-v1";
+let seenTranscriptIds = new Set();
+function readLiveTranscriptAll() {
+  try { return JSON.parse(localStorage.getItem(LIVE_TRANSCRIPT_KEY) || "{}"); } catch (e) { return {}; }
+}
+function writeLiveTranscriptAll(all) {
+  try { localStorage.setItem(LIVE_TRANSCRIPT_KEY, JSON.stringify(all)); } catch (e) { /* storage blocked / full */ }
+}
+function publishLiveTranscript(entry) {
+  if (!live.realMode || !state.liveMeeting) return;
+  const all = readLiveTranscriptAll(), mid = state.liveMeeting.id;
+  const list = all[mid] || [];
+  list.push({ id: entry.id, speakerId: ME.id, speaker: entry.speaker, text: entry.text, at: entry.at, lang: entry.lang });
+  if (list.length > 500) list.shift();
+  all[mid] = list;
+  writeLiveTranscriptAll(all);
+  seenTranscriptIds.add(entry.id); // this tab's own line - never re-added if it later reads its own write back
+}
+// merges any segment another tab published for the CURRENT meeting that this tab hasn't shown yet (also catches up on history from before this tab joined)
+function applyLiveTranscript() {
+  if (!live.realMode || !state.liveMeeting) return;
+  const list = readLiveTranscriptAll()[state.liveMeeting.id] || [];
+  list.forEach((seg) => {
+    if (seenTranscriptIds.has(seg.id)) return;
+    seenTranscriptIds.add(seg.id);
+    if (seg.speakerId === ME.id) return; // this tab already added its own line locally when it was spoken
+    aiAddLine({ id: seg.id, speaker: seg.speaker, speakerId: seg.speakerId, text: seg.text, at: seg.at, lang: seg.lang }, "live");
+  });
+}
+function initLiveTranscriptSync() {
+  window.addEventListener("storage", (e) => { if (e.key === LIVE_TRANSCRIPT_KEY) applyLiveTranscript(); });
+}
 function commitCaption(text) {
   speech.interim = "";
   speech.lines.push(text);
   if (speech.lines.length > 2) speech.lines.shift();
-  const entry = { id: "r" + ++aiNotes.seq, speaker: ME.name, text, lang: meetingLanguageState.transcriptionLanguage, at: Date.now() }; // the real transcript: your own microphone
+  const entry = { id: uid("tr"), speaker: ME.name, speakerId: ME.id, text, lang: meetingLanguageState.transcriptionLanguage, at: Date.now() }; // the real transcript: your own microphone
   speech.transcript.push(entry);
   if (speech.transcript.length > 500) speech.transcript.shift();
   aiAddLine(entry);
+  publishLiveTranscript(entry); // real mode only: lets other tabs in the same meeting pick this up (see "REAL-TIME MULTI-USER TRANSCRIPT" below)
   armCaptionTimer();
   renderCaption();
 }
@@ -4254,8 +4592,10 @@ function speechSync(userAction) {
 function chooseTranscriptionLanguage(short) {
   const s = meetingLanguageState, locale = LIVE_LOCALES[short];
   if (!locale) return;
-  if (locale === s.transcriptionLanguage) s.transcribing = !s.transcribing;             // the selected language is also the on/off switch
-  else {
+  if (locale === s.transcriptionLanguage) {                                            // the selected language is also the on/off switch
+    s.transcribing = !(s.transcribing || s.captionsEnabled);
+    if (!s.transcribing) s.captionsEnabled = false;                                    // toggling off here is a full stop too, same as the Notes & Coach button
+  } else {
     if (s.captionLanguage === s.transcriptionLanguage) s.captionLanguage = locale;      // captions follow until you choose otherwise
     s.transcriptionLanguage = locale; s.transcribing = true;
   }
@@ -4274,9 +4614,10 @@ function setCaptionLanguage(short) {
   saveMeetingLanguage(); renderLanguageUi();
   toast(`Caption language: ${LIVE_LANG[short]}`, "success", "captions");
 }
-function setTranscribing(on) { // the Start / Stop button in AI Notes; same state as picking a language in More
+function setTranscribing(on) { // the Start / Stop button in AI Notes: the one master switch for the whole speech pipeline
   const s = meetingLanguageState;
   s.transcribing = on;
+  if (!on) s.captionsEnabled = false; // Stop really stops everything - captions can't keep running without the engine behind them
   saveMeetingLanguage(); renderLanguageUi(); speechSync(true);
   if (s.transcriptionStatus !== "error") toast(on ? `Transcription on: ${langName(s.transcriptionLanguage)}` : "Transcription off.", "success", "transcription");
 }
@@ -4415,24 +4756,38 @@ function aiMatches(item, text) { // does this sentence / topic sound like this a
   return stems.some((s) => low.includes(s));
 }
 
-/* ---- transcript (append only) ---- */
-function aiLineEl(e) {
-  const el = document.createElement("div"), meta = document.createElement("div"), who = document.createElement("strong"), time = document.createElement("time"), text = document.createElement("div");
-  el.className = "live-ai-line"; el.setAttribute("data-line", e.id);
-  meta.className = "live-msg-meta"; who.className = "fw-medium"; who.textContent = e.speaker; time.textContent = liveClock(e.at); meta.append(who, time);
-  if (e.demo) { const b = document.createElement("span"); b.className = "live-ai-demo"; b.textContent = "DEMO"; el.setAttribute("data-demo", ""); meta.append(b); }
-  e.tags.slice(0, 3).forEach((t) => { const b = document.createElement("span"); b.className = "live-ai-tag"; b.setAttribute("data-tag", t); b.textContent = t; meta.append(b); });
-  text.className = "live-ai-text"; text.textContent = e.text;
-  el.append(meta, text);
+/* ---- transcript (append only), rendered as a conversation: same speaker in a row groups under one header, like the Chat panel's own .live-msg/.live-bubble ---- */
+function initialsOf(name) { return (name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?"; }
+function speakerHue(e) { const s = e.speakerId || e.speaker || ""; let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h % 360; }
+function sameSpeaker(a, b) { return !!a && !!b && (a.speakerId || b.speakerId ? a.speakerId === b.speakerId : a.speaker === b.speaker); }
+function aiLineEl(e, grouped) {
+  const isMe = !!(e.speakerId && e.speakerId === ME.id);
+  const tagsHtml = e.tags.slice(0, 3).map((t) => `<span class="live-ai-tag" data-tag="${t}">${escapeHtml(t)}</span>`).join("");
+  const demoHtml = e.demo ? `<span class="live-ai-demo">DEMO</span>` : "";
+  const bubble = `<div class="live-bubble">${escapeHtml(e.text)}</div>`;
+  const el = document.createElement("div");
+  el.setAttribute("data-line", e.id);
+  if (e.demo) el.setAttribute("data-demo", "");
+  el.title = liveClock(e.at);
+  if (isMe) {
+    el.className = "live-ai-line live-msg own" + (grouped ? " grouped" : "");
+    el.innerHTML = (grouped ? "" : `<div class="live-msg-meta">${escapeHtml(e.speaker)} (You) <time>${liveClock(e.at)}</time>${demoHtml}${tagsHtml}</div>`) + bubble;
+  } else {
+    el.className = "live-ai-line live-msg" + (grouped ? " grouped" : "");
+    el.style.setProperty("--hue", speakerHue(e));
+    el.innerHTML = (grouped ? "" : `<span class="live-msg-avatar">${escapeHtml(initialsOf(e.speaker))}</span>`) +
+      `<div class="live-min-0">${grouped ? "" : `<div class="live-msg-meta"><strong class="fw-medium">${escapeHtml(e.speaker)}</strong><time>${liveClock(e.at)}</time>${demoHtml}${tagsHtml}</div>`}${bubble}</div>`;
+  }
   return el;
 }
 function aiAddLine(e, which = "live") { // real speech arrives with the default; the demo controller passes "demo"
   const st = aiNotes[which], d = aiDetect(e.text, e.speaker);
   Object.assign(e, { tags: d.tags, due: d.due, owner: d.owner, task: d.task });
+  const grouped = sameSpeaker(st.lines[st.lines.length - 1], e);
   st.lines.push(e);
   if (st.lines.length > 500) st.lines.shift();
   if (which === aiNotes.mode) {
-    const list = $("#aiTrList"), atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 24, el = aiLineEl(e), q = $("#aiTrSearch").value.trim().toLowerCase();
+    const list = $("#aiTrList"), atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 24, el = aiLineEl(e, grouped), q = $("#aiTrSearch").value.trim().toLowerCase();
     if (q && !e.text.toLowerCase().includes(q)) el.classList.add("d-none");
     list.append(el);
     while (list.childElementCount > 500) list.firstElementChild.remove();
@@ -4444,7 +4799,7 @@ function aiAddLine(e, which = "live") { // real speech arrives with the default;
 function aiRebuildTranscript() { // only when the panel switches between the live and the demo state (or one of them is reset); the result box belongs to the state that produced it
   const list = $("#aiTrList"), st = S();
   $("#aiResult").classList.add("d-none"); $("#aiResult").replaceChildren();
-  list.replaceChildren(...st.lines.map(aiLineEl));
+  list.replaceChildren(...st.lines.map((e, i) => aiLineEl(e, sameSpeaker(st.lines[i - 1], e))));
   $("#aiTrEmpty").classList.toggle("d-none", st.lines.length > 0);
   const sample = '<span class="d-block mt-2"><button type="button" class="live-mini-btn" data-ai-act="sample-load"><i class="bi bi-magic"></i>Load sample data</button></span>'; // the whole sample meeting at once, marked DEMO
   $("#aiTrEmpty").innerHTML = aiDemoMode() ? `The demo hasn't started.<br>Press <strong>Start</strong> to play the sample meeting live, or load it all at once.${sample}` : `No transcript yet.<br>Start transcription to capture what your microphone hears, or see how Notes &amp; Coach looks with sample data.${sample}`;
@@ -4469,8 +4824,9 @@ function aiRenderBar() { // status line, language and buttons follow meetingLang
     status.textContent = running ? (st === "starting" ? "Starting transcription…" : `Live transcribing… ${formatMMSS(aiNotes.secs)}`) : { idle: "Transcription off", stopped: s.statusNote || "Stopped", error: s.statusNote || "Transcription error" }[st];
     status.classList.toggle("text-warning", st === "error");
     $("#aiTrLang").value = langShort(s.transcriptionLanguage);
-    label.textContent = s.transcribing ? "Stop transcription" : "Start transcription";
-    icon.className = s.transcribing ? "bi bi-stop-fill" : "bi bi-play-fill";
+    const engineOn = s.transcribing || s.captionsEnabled; // whatever is keeping the recognition engine running, the button always reflects and can fully stop it
+    label.textContent = engineOn ? "Stop transcription" : "Start transcription";
+    icon.className = engineOn ? "bi bi-stop-fill" : "bi bi-play-fill";
   }
   aiWave();
   aiRenderCoachHead();
@@ -5074,7 +5430,7 @@ function aiCommitEdit(input, cancel) { // the small inline editor of an action i
 }
 function initAiNotes() {
   on($("#liveAiBtn"), "click", () => toggleLivePanel("ai-notes"));
-  on($("#aiTrToggle"), "click", () => { if (aiDemoMode()) demoToggle(); else setTranscribing(!meetingLanguageState.transcribing); });
+  on($("#aiTrToggle"), "click", () => { if (aiDemoMode()) demoToggle(); else setTranscribing(!(meetingLanguageState.transcribing || meetingLanguageState.captionsEnabled)); });
   on($("#aiTrLang"), "change", (e) => chooseTranscriptionLanguage(e.target.value));
   on($("#aiTrSample"), "click", () => { if (aiDemoMode()) demoStep(); });                       // "Add sample": one scripted line, also while paused
   on($("#aiTrClear"), "click", () => { if (aiDemoMode()) demoReset(); });                       // in the demo this is "Reset demo"; the real transcript has no clear button
@@ -5535,6 +5891,8 @@ function setLiveQuality(q, silent) {
 function setLiveBackground(kind) { videoFx.set({ background: kind }); }
 
 function resetLiveRoom() {
+  stopLivePresenceSync();
+  seenTranscriptIds = new Set();
   Object.values(live.timers).forEach((t) => { clearInterval(t); clearTimeout(t); });
   live.camToken++;
   liveStopStream();
@@ -5594,6 +5952,7 @@ function startLiveMeeting(meeting, adhoc, deviceState) {
   resetLiveRoom();
   const ds = deviceState || {};
   const sec = meeting.security || {};
+  live.realMode = !meeting.isDemo; // a meeting a real demo user actually created/joined runs on real presence; the seeded demo meetings keep the simulated roster
   live.hostId = userById(meeting.hostId) ? meeting.hostId : ME.id;
   live.pinnedId = null; // nobody is pinned at the start: speaker view follows whoever speaks until someone is pinned by hand
   live.locked = !!meeting.locked;
@@ -5611,13 +5970,18 @@ function startLiveMeeting(meeting, adhoc, deviceState) {
   setLiveCam(ds.cam !== false);
   renderLanguageUi(); speechSync(); // captions / transcription come back the way the user last left them
   aiNotesStart(); // your notes, lists and playbook for THIS meeting code come back
+  seenTranscriptIds = new Set();
+  applyLiveTranscript(); // real mode: catch up on transcript segments other tabs already published before this tab joined
   live.peers = {};
-  livePeople().forEach((u, i) => { if (u.id !== ME.id) seedLivePeer(u, i); });
+  live.joined = [];
+  if (!live.realMode) livePeople().forEach((u, i) => { if (u.id !== ME.id) seedLivePeer(u, i); }); // real mode: peers start with no state until their own tab reports one
   seedLiveChat();
   syncLiveSecurityUI();
   renderLiveDeviceMenu("mic");
   renderLiveDeviceMenu("cam");
   renderLiveStage();
+  syncLiveDataModeUi();
+  startLivePresenceSync();
 
   const tick = () => {
     const secs = Math.floor((Date.now() - state.liveStartTs) / 1000);
@@ -5641,8 +6005,9 @@ function initLiveControls() {
     setLiveMic(!liveMicOn());
     refreshLiveTiles();
     if (live.panel === "participants") renderLivePanel();
+    publishLivePresence();
   });
-  on($("#liveCamBtn"), "click", () => { setLiveCam(!liveCamOn()); refreshLiveTiles(); if (live.panel === "participants") renderLivePanel(); });
+  on($("#liveCamBtn"), "click", () => { setLiveCam(!liveCamOn()); refreshLiveTiles(); if (live.panel === "participants") renderLivePanel(); publishLivePresence(); });
   on($("#liveChatBtn"), "click", () => toggleLivePanel("chat"));
   on($("#liveParticipantsBtn"), "click", () => toggleLivePanel("participants"));
   on($("#liveScreenBtn"), "click", () => (live.sharing ? stopScreenShare() : startScreenShare()));
@@ -5657,6 +6022,10 @@ function initLiveControls() {
     runRecAction("start");
   });
   on($("#liveShareLinkBtn"), "click", () => { if (state.liveMeeting && authorize("meeting.invite", state.liveMeeting)) copyMeetingLink(state.liveMeeting); });
+  on($("#liveDataModeBtn"), "click", () => {
+    const next = !live.realMode;
+    liveConfirm({ title: "Switch Data Mode?", text: "Changing this setting will reload the meeting participant data.", ok: "Switch", onOk: () => setLiveDataMode(next) });
+  });
   on($("#liveShowTileBtn"), "click", () => runLiveAction("show-tile"));
   on($("#liveEndBtn"), "click", openEndDialog);
   on($("#leaveMeetingBtn"), "click", leaveLiveMeeting);
@@ -5683,12 +6052,12 @@ function initLiveControls() {
     if ((el = t.closest("[data-quality]"))) { setLiveQuality(el.getAttribute("data-quality")); return; }
     if ((el = t.closest("[data-live-bg]"))) { setLiveBackground(el.getAttribute("data-live-bg")); return; }
     if ((el = t.closest("[data-rec]"))) { runRecAction(el.getAttribute("data-rec")); return; }
-    if (t.closest("[data-live-close-dialog]")) { closeLiveDialog(); return; }
+    if (t.closest("[data-live-close-dialog]")) { if (live.dialog !== "dlgMeetingEnded") closeLiveDialog(); return; }
     if (t.closest("[data-live-fake-download]")) { e.preventDefault(); toast("Downloading file…"); return; }
     if ((el = t.closest("#liveStage .live-tile:not(.main), #liveStrip .live-tile"))) pinLiveUser(el.getAttribute("data-tile-user"));
   });
   on(room, "keydown", (e) => {
-    if (e.key === "Escape" && live.dialog) { e.stopPropagation(); closeLiveDialog(); return; }
+    if (e.key === "Escape" && live.dialog) { e.stopPropagation(); if (live.dialog !== "dlgMeetingEnded") closeLiveDialog(); return; }
     const tile = e.target.closest && e.target.closest(".live-tile[role='button']");
     if (tile && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); pinLiveUser(tile.getAttribute("data-tile-user")); }
     if (e.key === "Enter" && e.target.id === "liveAnswerInput") runLiveAction("answer-save", e.target);
@@ -5760,6 +6129,55 @@ function initRemoveParticipantConfirm() {
   });
 }
 
+/* ---- "End for all": broadcasts through the same real, same-browser localStorage+storage-event channel already used for presence/transcript
+   (there is no backend here). Every other tab currently in this meeting gets a real, synchronized 5-second countdown, then is torn down the
+   same way leaveLiveMeeting() tears itself down - camera, mic, screen share, captions, transcription and timers all genuinely stop. ---- */
+const LIVE_ENDED_KEY = "mcm-live-ended-v1";
+function broadcastMeetingEnded(meetingId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LIVE_ENDED_KEY) || "{}");
+    Object.keys(all).forEach((k) => { if (Date.now() - all[k] > 60000) delete all[k]; }); // keep the key small
+    all[meetingId] = Date.now();
+    localStorage.setItem(LIVE_ENDED_KEY, JSON.stringify(all));
+  } catch (e) { /* storage blocked */ }
+}
+function initLiveEndedSync() {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== LIVE_ENDED_KEY || !state.liveMeeting || live.endedClosing) return;
+    let all; try { all = JSON.parse(localStorage.getItem(LIVE_ENDED_KEY) || "{}"); } catch { return; }
+    if (all[state.liveMeeting.id]) startMeetingEndedCountdown();
+  });
+}
+// a REAL countdown (setInterval ticking once a second) - not a cosmetic timer, it is what actually triggers the teardown at 0
+function startMeetingEndedCountdown() {
+  if (live.endedClosing) return;
+  live.endedClosing = true;
+  let n = 5;
+  closeLiveMenus();
+  openLiveDialog("dlgMeetingEnded");
+  $("#dlgEndedCountdown").textContent = String(n);
+  live.timers.ended = setInterval(() => {
+    n--;
+    if (n <= 0) { clearInterval(live.timers.ended); live.timers.ended = 0; forceCloseEndedMeeting(); return; }
+    $("#dlgEndedCountdown").textContent = String(n);
+  }, 1000);
+}
+// every OTHER participant's tab, once the host's countdown reaches 0: the same real teardown leaveLiveMeeting() does, none of it skipped
+function forceCloseEndedMeeting() {
+  const meeting = state.liveMeeting;
+  resetLiveRoom(); // stops camera, mic audio chain, screen share, captions/transcription, every live timer
+  closeModal("liveModalOverlay");
+  if (meeting) clearLivePresenceSelf(meeting);
+  live.chat = []; live.qa = [];
+  live.endedClosing = false;
+  leaveMeetingTab();
+  state.liveMeeting = null;
+  loadState(); // authoritative post-end state (status "Ended", moved to Past) the host already saved
+  applyRbac();
+  switchSidebarView("past");
+  renderAllViews();
+  toast("The meeting has ended.");
+}
 // Admin / a Manager of this meeting's team: [Leave Meeting] [End for all]. Everyone else: [Cancel] [Leave Meeting] (never "End for all").
 function openEndDialog() {
   const canEnd = can("meeting.end", state.liveMeeting);
@@ -5778,6 +6196,7 @@ async function leaveLiveMeeting() {
   closeModal("endMeetingConfirmOverlay");
   closeModal("liveModalOverlay");
   resetLiveRoom();
+  clearLivePresenceSelf(meeting);
   live.chat = [];
   live.qa = [];
   leaveMeetingTab();
@@ -5794,6 +6213,7 @@ async function endLiveMeeting() {
   closeModal("endMeetingConfirmOverlay");
   closeModal("liveModalOverlay");
   resetLiveRoom();
+  clearLivePresenceSelf(meeting);
   live.chat = [];
   live.qa = [];
   leaveMeetingTab(); // in a meeting tab: back to the normal Video Meetings page
@@ -5807,6 +6227,7 @@ async function endLiveMeeting() {
   state.meetings.past.unshift(meeting);
   state.liveMeeting = null;
   saveState();
+  broadcastMeetingEnded(meeting.id); // every other tab currently in this meeting gets a real, synchronized countdown then closes
   switchSidebarView("past");
   renderAllViews();
   toast("Meeting ended. Moved to Past Meetings.");
@@ -5867,7 +6288,12 @@ function setDrawerTab(tab) {
     body.innerHTML = `
       <div class="drawer-section-title">Members</div>
       <div class="drawer-participant"><span class="picker-avatar">${host2 ? host2.initials : "?"}</span><span style="flex:1">${host2 ? host2.name : "—"} (Host)</span></div>
-      ${m.participants.map((id) => { const u = userById(id); return `<div class="drawer-participant"><span class="picker-avatar">${u ? u.initials : "?"}</span><span style="flex:1">${u ? u.name : id}</span></div>`; }).join("")}
+      ${m.participants.map((id) => {
+        const u = userById(id);
+        const inv = m.invitations && m.invitations[id];
+        const badge = inv ? `<span class="status-chip ${INVITE_STATUS_CLASS[inv.status] || "status-StartingSoon"}">${INVITE_STATUS_LABEL[inv.status] || "Pending"}</span>` : "";
+        return `<div class="drawer-participant"><span class="picker-avatar">${u ? u.initials : "?"}</span><span style="flex:1">${u ? u.name : id}</span>${badge}</div>`;
+      }).join("")}
       <div class="drawer-section-title">Guests</div>
       ${m.guests.length ? m.guests.map((g) => `<div class="drawer-participant"><span class="picker-avatar">${fullInfo ? g.email.slice(0,2).toUpperCase() : "EG"}</span><span style="flex:1">${fullInfo ? escapeHtml(g.email) : "External guest"}</span><span class="chip guest-chip" style="padding:.125rem .5rem">Guest</span></div>`).join("") : '<p style="color:var(--text-tertiary);font-size:.78125rem">No guests invited.</p>'}
     `;
@@ -5890,7 +6316,7 @@ function setDrawerTab(tab) {
   if (canEdit && can("meeting.edit", m)) footerBtns += `<button class="btn btn-outline btn-sm" id="drawerEditBtn" type="button">Edit</button><button class="btn btn-outline btn-sm" id="drawerRescheduleBtn" type="button">Reschedule</button>`;
   if (canEdit && can("meeting.cancel", m)) footerBtns += `<button class="btn btn-danger btn-sm" id="drawerCancelBtn" type="button">Cancel</button>`;
   footer.innerHTML = footerBtns;
-  on($("#drawerJoinBtn"), "click", () => { closeModal("detailsDrawerOverlay"); openPrejoinFor(m); });
+  on($("#drawerJoinBtn"), "click", () => { closeModal("detailsDrawerOverlay"); requestJoin(m); });
   on($("#drawerCopyBtn"), "click", () => copyMeetingLink(m));
   on($("#drawerEditBtn"), "click", () => { closeModal("detailsDrawerOverlay"); openScheduleModal("edit", m); });
   on($("#drawerRescheduleBtn"), "click", () => { closeModal("detailsDrawerOverlay"); openRescheduleModal(m); });
@@ -5985,29 +6411,111 @@ function exportMeetingData(meeting) {
 /* ============================================================
    18. INVITE PARTICIPANTS MODAL
    ============================================================ */
+const INVITE_STATUS_LABEL = { pending: "Pending", accepted: "Accepted", declined: "Declined", cancelled: "Cancelled" };
+const INVITE_STATUS_CLASS = { pending: "status-StartingSoon", accepted: "status-Live", declined: "status-Cancelled", cancelled: "status-Ended" };
 function openInviteModal(meeting) {
   if (meeting ? !authorize("meeting.invite", meeting) : !authorize("meeting.create")) return; // no meeting = inviting to the one being created
-  state.inviteForm.participants = [];
-  state.inviteForm.guests = [];
+  // pre-meeting (Start Meeting lobby, no real meeting/ID yet): reopen shows whatever was queued, instead of blanking it out
+  state.inviteForm.participants = meeting ? [] : state.startInvite.participants.slice();
+  state.inviteForm.guests = meeting ? [] : state.startInvite.guests.slice();
   state.inviteForm.targetMeetingId = meeting ? meeting.id : null;
   renderChips("inviteParticipantChips", state.inviteForm.participants, "participants");
   renderChips("inviteGuestChips", state.inviteForm.guests, "guests");
+  renderInviteStatusList(meeting);
   openModal("inviteModalOverlay");
+}
+// the organizer's live view of who's pending/accepted/declined/cancelled for THIS meeting, with Resend/Cancel on pending ones
+function renderInviteStatusList(meeting) {
+  const box = $("#inviteStatusList");
+  const rows = meeting && meeting.invitations ? Object.keys(meeting.invitations).map((id) => ({ id, ...meeting.invitations[id] })).filter((r) => userById(r.id)) : [];
+  if (!rows.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  const canManage = can("meeting.invite", meeting);
+  rows.sort((a, b) => b.invitedAt - a.invitedAt);
+  box.innerHTML = `<label>Invitation Status</label><div class="invite-status-rows">${rows.map((r) => {
+    const u = userById(r.id);
+    const actions = canManage && r.status === "pending"
+      ? `<button type="button" class="btn btn-link btn-sm p-0 ms-2" data-invite-resend="${u.id}">Resend</button><button type="button" class="btn btn-link btn-sm p-0 ms-2 text-danger" data-invite-cancel="${u.id}">Cancel</button>`
+      : "";
+    return `<div class="drawer-participant">
+      <span class="picker-avatar">${u.initials}</span>
+      <span style="flex:1">${escapeHtml(u.name)}<br><span class="text-secondary" style="font-size:.71875rem">${escapeHtml(u.label)}</span></span>
+      <span class="status-chip ${INVITE_STATUS_CLASS[r.status] || "status-StartingSoon"}">${INVITE_STATUS_LABEL[r.status] || "Pending"}</span>
+      ${actions}
+    </div>`;
+  }).join("")}</div>`;
+}
+// one active invitation per meeting+user: a cancelled one can be re-invited, but a pending/accepted/declined one is never duplicated
+function createInvitation(meeting, userId) {
+  meeting.invitations = meeting.invitations || {};
+  const existing = meeting.invitations[userId];
+  if (existing && existing.status !== "cancelled") return false;
+  meeting.invitations[userId] = { status: "pending", invitedBy: ME.id, invitedAt: Date.now(), respondedAt: null };
+  state.notifications = state.notifications.filter((n) => !(n.userId === userId && n.meetingId === meeting.id && n.type === "invite")); // no stacked dupes
+  addNotification(userId, { type: "invite", icon: "invite", meetingId: meeting.id, title: `${ME.name} invited you to a meeting`, text: meeting.title });
+  return true;
+}
+function resendInvitation(meeting, userId) {
+  if (!authorize("meeting.invite", meeting)) return;
+  const inv = meeting.invitations && meeting.invitations[userId];
+  if (!inv || inv.status !== "pending") return;
+  inv.invitedAt = Date.now();
+  state.notifications = state.notifications.filter((n) => !(n.userId === userId && n.meetingId === meeting.id && n.type === "invite"));
+  addNotification(userId, { type: "invite", icon: "invite", meetingId: meeting.id, title: `${ME.name} invited you to a meeting`, text: meeting.title });
+  saveState();
+  toast("Invitation resent.");
+  renderInviteStatusList(meeting);
+}
+function cancelInvitation(meeting, userId) {
+  if (!authorize("meeting.invite", meeting)) return;
+  const inv = meeting.invitations && meeting.invitations[userId];
+  if (!inv || inv.status !== "pending") return;
+  inv.status = "cancelled";
+  inv.respondedAt = Date.now();
+  meeting.participants = meeting.participants.filter((id) => id !== userId); // the recipient can no longer see or accept it
+  state.notifications = state.notifications.filter((n) => !(n.userId === userId && n.meetingId === meeting.id && n.type === "invite"));
+  saveState();
+  renderAllViews();
+  toast("Invitation cancelled.");
+  renderInviteStatusList(meeting);
 }
 function initInviteModal() {
   initParticipantPicker("inviteParticipantSearch", "inviteParticipantDropdown", "inviteParticipantChips", state.inviteForm);
   initGuestEntry("inviteGuestEmailInput", "inviteAddGuestBtn", "inviteGuestChips", null, state.inviteForm);
   on($("#sendInvitationsBtn"), "click", () => {
-    const target = state.inviteForm.targetMeetingId ? findMeeting(state.inviteForm.targetMeetingId) : null;
+    const hasTarget = !!state.inviteForm.targetMeetingId;
+    const target = hasTarget ? findMeeting(state.inviteForm.targetMeetingId) : null;
     if (target ? !authorize("meeting.invite", target.meeting) : !authorize("meeting.create")) return;
+    if (!hasTarget) {
+      // no real meeting/ID exists yet (Start Meeting lobby): queue only. Nothing is sent until the meeting is actually created.
+      state.startInvite.participants = state.inviteForm.participants.slice();
+      state.startInvite.guests = state.inviteForm.guests.slice();
+      closeModal("inviteModalOverlay");
+      const n = state.startInvite.participants.length + state.startInvite.guests.length;
+      toast(n ? `${n} participant${n === 1 ? "" : "s"} added. Invitations will be sent when the meeting starts.` : "No participants selected.");
+      return;
+    }
+    let sentCount = 0;
     if (target) {
-      state.inviteForm.participants.forEach((id) => { if (!target.meeting.participants.includes(id)) target.meeting.participants.push(id); });
-      state.inviteForm.guests.forEach((email) => { if (!target.meeting.guests.some((g) => g.email === email)) target.meeting.guests.push({ email }); });
+      const m = target.meeting;
+      state.inviteForm.participants.forEach((id) => {
+        if (!m.participants.includes(id)) m.participants.push(id);
+        if (createInvitation(m, id)) sentCount++;
+      });
+      state.inviteForm.guests.forEach((email) => { if (!m.guests.some((g) => g.email === email)) m.guests.push({ email }); });
       saveState();
       renderAllViews();
+      renderInviteStatusList(m);
     }
     closeModal("inviteModalOverlay");
-    toast("Invitations sent successfully.");
+    toast(sentCount ? `${sentCount} invitation${sentCount === 1 ? "" : "s"} sent.` : "Invitations sent successfully.");
+  });
+  on($("#inviteStatusList"), "click", (e) => {
+    const target = state.inviteForm.targetMeetingId ? findMeeting(state.inviteForm.targetMeetingId) : null;
+    if (!target) return;
+    const resendBtn = e.target.closest("[data-invite-resend]"), cancelBtn = e.target.closest("[data-invite-cancel]");
+    if (resendBtn) resendInvitation(target.meeting, resendBtn.getAttribute("data-invite-resend"));
+    else if (cancelBtn) cancelInvitation(target.meeting, cancelBtn.getAttribute("data-invite-cancel"));
   });
 }
 
@@ -6222,7 +6730,9 @@ function renderNotifications() {
   $("#notifList").innerHTML = list.length ? list.map((n) => `
     <div class="notif-item">
       <span class="notif-icon">${NOTIF_ICONS[n.icon] || ""}</span>
-      <div class="notif-text"><strong>${escapeHtml(n.title)}</strong>${escapeHtml(n.text)}<span class="notif-time">${n.time}</span></div>
+      <div class="notif-text"><strong>${escapeHtml(n.title)}</strong>${escapeHtml(n.text)}<span class="notif-time">${n.time}</span>
+        ${n.meetingId ? `<div class="notif-actions"><button type="button" class="btn btn-outline btn-sm" data-notif-decline="${n.meetingId}">Decline</button><button type="button" class="btn btn-primary btn-sm" data-notif-accept="${n.meetingId}">Accept</button></div>` : ""}
+      </div>
     </div>`).join("") : `<div class="notif-item"><div class="notif-text"><strong>You're all caught up</strong>No new notifications.</div></div>`;
   const badge = $("#notifBadge");
   badge.textContent = String(list.length);
@@ -6232,6 +6742,14 @@ function initNotifications() {
   renderNotifications();
   on($("#notifBtn"), "click", (e) => { e.stopPropagation(); $("#notifDropdown").classList.toggle("open"); });
   document.addEventListener("click", (e) => { if (!e.target.closest(".notif-wrap")) $("#notifDropdown").classList.remove("open"); });
+  on($("#notifList"), "click", (e) => {
+    const acceptBtn = e.target.closest("[data-notif-accept]"), declineBtn = e.target.closest("[data-notif-decline]");
+    if (!acceptBtn && !declineBtn) return;
+    const found = findMeeting((acceptBtn || declineBtn).getAttribute(acceptBtn ? "data-notif-accept" : "data-notif-decline"));
+    if (!found) return;
+    if (acceptBtn) acceptInvite(found.meeting); else declineInvite(found.meeting);
+    $("#notifDropdown").classList.remove("open");
+  });
 }
 
 /* ============================================================
@@ -6378,6 +6896,9 @@ function init() {
   renderAllViews();
   applyRbac();
   initTabSync();
+  initLivePresenceSync();
+  initLiveTranscriptSync();
+  initLiveEndedSync();
   if (meetingRoute) startMeetingTab(meetingRoute);
 }
 

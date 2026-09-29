@@ -721,14 +721,34 @@
       <button class="modal-close" data-close-modal="joinModalOverlay" type="button" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body">
-      <div class="form-group">
-        <label for="joinMeetingInput">Meeting ID or meeting link</label>
-        <input type="text" id="joinMeetingInput" placeholder="e.g. 123-456-789 or meet.mcm.example/abc123" />
-        <span class="field-error" id="err-joinMeetingInput"></span>
+      <div class="join-step" id="joinStepId">
+        <div class="form-group">
+          <label for="joinMeetingInput">Meeting ID or meeting link</label>
+          <input type="text" id="joinMeetingInput" placeholder="e.g. 123-456-789 or meet.mcm.example/abc123" />
+          <span class="field-error" id="err-joinMeetingInput"></span>
+        </div>
+      </div>
+      <div class="join-step" id="joinStepPassword" hidden>
+        <div class="join-password-notice">
+          <i class="bi bi-lock-fill"></i>
+          <div><strong>This meeting is password protected.</strong><span>Enter the password to continue.</span></div>
+        </div>
+        <div class="form-group">
+          <label for="joinPasswordInput">Meeting Password</label>
+          <div class="join-password-field">
+            <input type="password" id="joinPasswordInput" autocomplete="off" aria-label="Meeting password" />
+            <div class="schedule-password-actions">
+              <button type="button" class="schedule-password-btn" id="joinPasswordVisBtn" title="Show password" aria-label="Show password"><i class="bi bi-eye"></i></button>
+            </div>
+          </div>
+          <span class="field-error" id="err-joinPasswordInput"></span>
+        </div>
+        <p class="join-password-hint">Contact the meeting organizer if you don't have the password.</p>
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" data-close-modal="joinModalOverlay" type="button">Cancel</button>
+      <button class="btn btn-outline" data-close-modal="joinModalOverlay" type="button" id="joinCancelBtn">Cancel</button>
+      <button class="btn btn-outline" type="button" id="joinBackBtn" hidden><i class="bi bi-arrow-left"></i> Back</button>
       <button class="btn btn-primary" id="joinMeetingSubmitBtn" type="button">Join Meeting</button>
     </div>
   </div>
@@ -1075,6 +1095,10 @@
         <span class="live-flag d-none" id="liveTranscribeFlag" title="Live transcription"><i class="bi bi-file-earmark-text"></i><span class="d-none d-xl-inline" id="liveTranscribeText"></span></span>
         <span class="live-flag d-none" id="liveShareLockFlag" title="Only the host can share"><i class="bi bi-person-lock"></i><span class="d-none d-xl-inline">Host-only sharing</span></span>
         <span class="live-flag live-flag-warn d-none" id="liveLockFlag" title="Meeting locked"><i class="bi bi-lock-fill"></i><span class="d-none d-lg-inline">Locked</span></span>
+
+        <button class="live-pill" id="liveDataModeBtn" type="button" title="Using simulated participants and meeting activity">
+          <i class="bi bi-flask"></i><span class="d-none d-lg-inline" id="liveDataModeLabel">Demo Data</span><span class="live-pill-badge" id="liveDataModeBadge">ON</span>
+        </button>
 
         <button class="live-pill d-none d-sm-inline-flex" id="liveShareLinkBtn" type="button" aria-label="Share link" data-perm="meeting.invite">
           <i class="bi bi-link-45deg"></i><span class="d-none d-lg-inline">Share Link</span>
@@ -1690,6 +1714,17 @@
         </div>
       </div>
     </section>
+
+    <!-- non-dismissible: the host ended the meeting, closing for everyone on a real countdown (see startMeetingEndedCountdown) -->
+    <section class="live-dialog live-dialog-sm card text-center" id="dlgMeetingEnded" role="alertdialog" aria-modal="true" aria-labelledby="dlgEndedTitle" aria-describedby="dlgEndedText" tabindex="-1">
+      <div class="card-body p-4">
+        <h2 class="fs-5 fw-semibold mb-2" id="dlgEndedTitle">Meeting ended</h2>
+        <p class="text-body-secondary mb-1" id="dlgEndedText">The host has ended this meeting.</p>
+        <p class="text-body-secondary mb-2">This meeting will close in</p>
+        <div class="display-5 fw-bold mb-3" id="dlgEndedCountdown">5</div>
+        <p class="text-body-secondary small mb-0">Please leave or save anything you need before the meeting ends.</p>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -1792,6 +1827,7 @@
       <button class="modal-close" data-close-modal="inviteModalOverlay" type="button" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body">
+      <div class="invite-status-list" id="inviteStatusList" hidden></div>
       <div class="form-group">
         <label>Internal Members</label>
         <div class="participant-picker" id="inviteParticipantPicker">
